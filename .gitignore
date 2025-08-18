@@ -1,0 +1,4 @@
+.sync/
+jillem_zips/
+*.pyc
+python tools/ia
