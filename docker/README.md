@@ -1,0 +1,132 @@
+# ia-mirror (Dockerized Internet Archive mirror utility)
+
+Minimal Dockerized MVP for mirroring/downloading items from the Internet Archive using the `ia` CLI (via the `internetarchive` Python package).
+
+This repository provides a small container that wraps parallel downloads, resume, dry-run, checksum verification and a small summary `report.json` written alongside the downloaded data.
+
+## QuickStart:
+
+```
+docker run --rm \
+  -v "$PWD/mirror:/data" \
+  -e IA_IDENTIFIER=The_Babe_Ruth_Collection \
+  -e IA_COLLECTION=1 \
+  -e IA_DESTDIR=/data \
+  -e IA_ACCESS_KEY=your_access_key_here \
+  -e IA_SECRET_KEY=your_secret_key_here \
+  -e IA_CONCURRENCY=3 \
+  -e IA_CHECKSUM=1 \
+  ia-mirror:local
+```
+
+1. Obtain archive.org credentials:
+  - Create an account (https://archive.org/account/login).
+  - Generate or locate your access key and secret at https://archive.org/account/s3.php.
+
+2. (Host config method) On your host run:
+  ia configure
+  This creates ~/.config/ia/ia.ini. Then run the container mounting it read-only:
+  -v "$HOME/.config/ia:/home/app/.config/ia:ro"
+
+3. (Env var method – recommended for ephemeral creds) Supply:
+  -e IA_ACCESS_KEY=XXXX -e IA_SECRET_KEY=YYYY
+  The entrypoint writes /home/app/.config/ia/ia.ini at runtime.
+
+4. (Docker secrets) Store ia.ini contents (or just key/secret lines) in a secret, mount it (e.g. /run/secrets/ia.ini), then copy or cat it to /home/app/.config/ia/ia.ini via a small wrapper script or custom entrypoint.
+
+5. Verify inside a running container (optional):
+  docker exec -it <container> ia whoami
+
+No credentials needed for public-item dry runs (use --dry-run).  
+
+## Examples:
+
+docker run --rm -v $(pwd)/mirror:/data -e IA_ITEM_NAME="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" ia-mirror:local
+
+### With more parallel downloads
+docker run --rm -v $(pwd)/mirror:/data -e IA_ITEM_NAME="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_CONCURRENCY="10" ia-mirror:local
+
+### Dry run to see what would be downloaded
+docker run --rm -v $(pwd)/mirror:/data -e IA_ITEM_NAME="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_DRY_RUN="true" ia-mirror:local
+
+## Quick concepts
+- Downloads are stored in the container-mounted `/data` volume (by default). Status and snapshots are stored in `DEST/.ia_status` and `DEST/report.json`.
+- Authentication can be provided via:
+  - mounting your host `~/.config/ia` into the container (read-only) — quick but exposes host config
+  - environment variables `IA_ACCESS_KEY` and `IA_SECRET_KEY` (the entrypoint will generate `~/.config/ia/ia.ini` at runtime)
+  - Docker secrets (recommended) — mount or inject into env in CI
+
+## Build (local)
+
+Build a single-arch image (defaults to `IA_PYPI_VERSION=5.5.0`):
+
+```bash
+docker build -t themorgantown/ia-mirror:0.1.0 -f docker/Dockerfile docker
+docker build --pull --rm -f docker/Dockerfile -t ia-mirror:local docker
+```
+
+Multi-arch build (recommended for publishing):
+
+```bash
+docker buildx create --use --name ia-builder || true
+docker buildx build --platform linux/amd64,linux/arm64 \
+  --build-arg IA_PYPI_VERSION=5.5.0 \
+  -t themorgantown/ia-mirror:0.1.0 --push -f docker/Dockerfile docker
+```
+
+## Usage examples
+
+Dry-run (no credentials needed for public items):
+
+```bash
+docker run --rm \
+  -v "$PWD/mirror:/data" \
+  -e IA_IDENTIFIER=jillem-full-archive \
+  themorgantown/ia-mirror:0.1.0 --dry-run
+```
+
+Run with host `ia` config (quick):
+
+```bash
+docker run --rm \
+  -v "$HOME/.config/ia:/home/app/.config/ia:ro" \
+  -v "$PWD/mirror:/data" \
+  -e IA_IDENTIFIER=jillem-full-archive \
+  -e IA_CONCURRENCY=6 \
+  -e IA_CHECKSUM=1 \
+  themorgantown/ia-mirror:0.1.0
+```
+
+Run using env creds (safer than mounting whole config):
+
+```bash
+docker run --rm \
+  -v "$PWD/mirror:/data" \
+  -e IA_IDENTIFIER=jillem-full-archive \
+  -e IA_ACCESS_KEY=AKXXX -e IA_SECRET_KEY=SKYYY \
+  -e IA_CONCURRENCY=6 \
+  themorgantown/ia-mirror:0.1.0
+```
+
+Recommended for production: use Docker secrets or your orchestration's secret mechanism and inject into the container as env vars or bind a single secret file as `/run/secrets/ia.ini` then copy into `/home/app/.config/ia/ia.ini` at startup.
+
+## Config / ENV variables
+- IA_IDENTIFIER (required) — item or collection identifier
+- IA_DESTDIR — destination directory under /data (container resolves path)
+- IA_CONCURRENCY (-j) — parallel workers (default 5)
+- IA_CHECKSUM — enable checksums
+- IA_DRY_RUN — dry-run
+- IA_VERIFY_ONLY, IA_ESTIMATE_ONLY, IA_COLLECTION, IA_RESUMEFOLDERS
+- IA_MAX_MBPS, IA_ASSUMED_MBPS, IA_COST_PER_GB
+- IA_LOG_LEVEL — INFO/DEBUG/ERROR (controls stdout/file logging)
+- IA_ACCESS_KEY / IA_SECRET_KEY — short-lived env-based credentials
+
+ 
+## Files & outputs
+- Download destination: `/data/<identifier>` (unless `--destdir` provided)
+- Status dir: `/data/<identifier>/.ia_status/<identifier>.json`
+- Snapshot report: `/data/<identifier>/report.json`
+- Log file: `/data/<identifier>/ia_download.log` (also streamed to stdout)
+
+## Troubleshooting
+- If the image cannot find `ia`, ensure the `internetarchive` package version installed in the image provides the `ia` CLI (we pin with `IA_PYPI_VERSION` build arg). You can also bind a local `ia` binary into `/app/ia`.

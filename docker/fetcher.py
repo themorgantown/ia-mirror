@@ -4,12 +4,6 @@ Advanced Internet Archive downloader / mirroring utility
 Restored full feature set: parallel downloads, resume (status file), collection mode, checksum verification,
 dry-run, verify-only, estimation, resumefolders optimization, bandwidth cap (via trickle if present),
 cost/time estimation, graceful termination.
-
-Added (MVP integration):
- - Environment variable → argument injection (if no CLI args provided) for IA_IDENTIFIER, IA_CONCURRENCY, IA_DESTDIR,
-   IA_CHECKSUM, IA_DRY_RUN, IA_GLOB, IA_RESUMEFOLDERS.
- - --print-effective-config to output a JSON view of resolved configuration then exit.
- - report.json summary (compatible with earlier minimal wrapper expectation) written to dest dir.
 """
 import argparse, json, logging, os, shutil, signal, subprocess, sys, threading, time, math
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -211,9 +205,12 @@ def inject_env_args():
     # Only inject when no CLI args given (preserve explicit CLI)
     if len(sys.argv) > 1:
         return
-    env_id = os.getenv("IA_IDENTIFIER")
+    # Prefer IA_IDENTIFIER for the item/collection identifier
+    env_id = os.getenv("IA_IDENTIFIER") or os.getenv("IA_ITEM_NAME")
     if not env_id:
         return
+    
+    # Start with identifier
     argv = [sys.argv[0], env_id]
 
     # boolean flags mapping
@@ -235,8 +232,11 @@ def inject_env_args():
         "IA_RETRIES": ("--retries",),
         "IA_PROGRESS_TIMEOUT": ("--progress-timeout",),
         "IA_MAX_TIMEOUT": ("--max-timeout",),
+        # Normalize case for historical env naming (accept IA_MAX_Mbps and IA_ASSUMED_Mbps too)
         "IA_MAX_MBPS": ("--max-mbps",),
+        "IA_MAX_Mbps": ("--max-mbps",),
         "IA_ASSUMED_MBPS": ("--assumed-mbps",),
+        "IA_ASSUMED_Mbps": ("--assumed-mbps",),
         "IA_COST_PER_GB": ("--cost-per-gb",),
     }
 
@@ -285,7 +285,16 @@ def main():
     if not args.identifier and not args.print_effective_config:
         ap.error("identifier required unless --print-effective-config")
 
-    dest = Path(args.destdir or f"./{args.identifier}").resolve()
+    # Resolve destination directory with sensible container defaults
+    if args.destdir:
+        dest_base = Path(args.destdir).resolve()
+        # Common pattern: IA_DESTDIR=/data should nest by identifier
+        if str(dest_base) == "/data" and args.identifier:
+            dest = (dest_base / str(args.identifier)).resolve()
+        else:
+            dest = dest_base
+    else:
+        dest = Path(f"/data/{args.identifier}").resolve()
     dest.mkdir(parents=True, exist_ok=True)
     init_logging(dest)
     ia = find_ia_executable(args.ia_path)
@@ -307,14 +316,37 @@ def main():
         "max_mbps": args.max_mbps,
         "assumed_mbps": args.assumed_mbps,
         "cost_per_gb": args.cost_per_gb,
-        "env_injected": bool(os.getenv("IA_IDENTIFIER"))
+        "env_injected": (len(sys.argv) > 1 and sys.argv[1] == (os.getenv("IA_IDENTIFIER") or os.getenv("IA_ITEM_NAME"))),
+        "fallback_to_item": False
     }
     if args.print_effective_config:
         print(json.dumps(cfg, indent=2))
         return 0
 
     status = load_status(args.identifier, dest)
-    items = get_collection_items(ia, args.identifier) if args.collection else [args.identifier]
+    
+    # Smart collection/item detection with fallback
+    if args.collection:
+        items = get_collection_items(ia, args.identifier)
+        if not items:
+            logging.warning("Collection '%s' not found or contains no items. Attempting to download as single item instead.", args.identifier)
+            items = [args.identifier]
+            # Update config to reflect the fallback
+            cfg["collection"] = False
+            cfg["fallback_to_item"] = True
+    else:
+        items = [args.identifier]
+
+    # Log what we're about to process
+    if len(items) == 1 and items[0] == args.identifier:
+        logging.info("Processing as single item: %s", args.identifier)
+    else:
+        logging.info("Processing collection '%s' with %d items", args.identifier, len(items))
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            for i, item in enumerate(items[:5]):  # Show first 5 items
+                logging.debug("  Item %d: %s", i+1, item)
+            if len(items) > 5:
+                logging.debug("  ... and %d more items", len(items) - 5)
 
     # Metadata for size estimates
     def fetch_size_map(items_list):
@@ -360,12 +392,40 @@ def main():
     else:
         job_list = [(item,f) for item in items for f in get_file_list(ia, item, args.glob)]
 
+    logging.info("Found %d items to process: %s", len(items), items)
+    logging.info("Built job list with %d files", len(job_list))
+    if len(job_list) == 0 and len(items) > 0:
+        # Debug: check what get_file_list returns
+        for item in items:
+            files = get_file_list(ia, item, args.glob)
+            logging.warning("get_file_list('%s', '%s', '%s') returned %d files: %s", ia, item, args.glob, len(files), files[:5] if files else [])
+
     total_jobs = len(job_list)
     if not total_jobs:
         print("❌ No matching files.", file=sys.stderr)
         return 1
+    
+    # Initialize status with existing files properly categorized
     if not status["pending"]:
-        status["pending"] = [f"{it}/{fn}" for it,fn in job_list]
+        status["pending"] = []
+        status["done"] = status.get("done", [])
+        
+        # Check each file to see if it already exists and is valid
+        for item, fname in job_list:
+            key = f"{item}/{fname}"
+            local_path = dest / fname
+            
+            # Check if file already exists and is valid
+            if (local_path.exists() and 
+                verify_local_file(ia, item, fname, local_path, args.checksum)):
+                if key not in status["done"]:
+                    status["done"].append(key)
+            else:
+                if key not in status["pending"]:
+                    status["pending"].append(key)
+        
+        # Save the updated status
+        save_status(args.identifier, dest, status)
 
     size_map = fetch_size_map(items)
     total_remote_bytes = 0
@@ -419,6 +479,9 @@ def main():
         return 0
 
     failures=[]
+    newly_downloaded = []
+    already_had = list(status.get('done', []))  # Files that were already complete before we started
+    
     print(f"📋 {len(status['pending'])} files pending, {len(status['done'])} done.")
     start_ts = time.time()
     try:
@@ -450,6 +513,7 @@ def main():
                 logging.error("Exception on %s: %s", fname, e)
             key = f"{item}/{fname}"
             if success:
+                newly_downloaded.append(key)
                 status["done"].append(key)
                 if key in status["pending"]:
                     status["pending"].remove(key)
@@ -463,6 +527,8 @@ def main():
             "schema_version": 1,
             "status": "interrupted" if _shutdown_event.is_set() else ("partial" if failures else "success"),
             "ok": len(status.get('done', [])),
+            "newly_downloaded": newly_downloaded,
+            "already_downloaded": already_had,
             "failed": failures,
             "duration_sec": round(end_ts-start_ts,2),
             "timestamp_utc": end_ts,
@@ -470,13 +536,17 @@ def main():
         })
 
     print("\n📊 Summary")
-    print(f"✅ OK: {len(status['done'])}")
+    print(f"✅ Total Complete: {len(status['done'])}")
+    print(f"📥 Newly Downloaded: {len(newly_downloaded)}")
+    print(f"💾 Already Had: {len(already_had)}")
     print(f"❌ Failed: {len(failures)}")
     end_ts = time.time()
     write_report(dest/REPORT_FILENAME, {
         "schema_version": 1,
         "status": "interrupted" if _shutdown_event.is_set() else ("partial" if failures else "success"),
         "ok": len(status['done']),
+        "newly_downloaded": newly_downloaded,
+        "already_downloaded": already_had,
         "failed": failures,
         "duration_sec": round(end_ts-start_ts,2),
         "timestamp_utc": end_ts,
@@ -485,4 +555,10 @@ def main():
     return 0 if not failures else 2
 
 if __name__=="__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as e:
+        print(f"🚨 FATAL ERROR: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

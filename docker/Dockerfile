@@ -13,7 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Install required system packages (curl for diagnostics if needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl tini && \
+    ca-certificates curl tini bash && \
     rm -rf /var/lib/apt/lists/*
 
 # Add non-root user
@@ -37,10 +37,10 @@ USER app
 # Labels for OCI / Docker Hub
 LABEL org.opencontainers.image.title="ia-mirror" \
     org.opencontainers.image.description="Minimal Internet Archive download/mirror utility (MVP)" \
-    org.opencontainers.image.source="https://example.com/your/repo" \
+    org.opencontainers.image.source="https://github.com/themorgantown/ia-mirror" \
+    org.opencontainers.image.documentation="https://github.com/themorgantown/ia-mirror#readme" \
     org.opencontainers.image.licenses="MIT" \
     org.opencontainers.image.version="${IA_PYPI_VERSION}" \
-    org.opencontainers.image.authors="Your Name <you@example.com>"
+    org.opencontainers.image.authors="Daniel Morgan"
 
 ENTRYPOINT ["/usr/bin/tini","--","/app/entrypoint.sh"]
-CMD ["--print-effective-config"]

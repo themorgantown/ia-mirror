@@ -1,0 +1,8 @@
+# Ignore everything by default except docker directory contents needed for build
+**
+!.dockerignore
+!docker/
+
+docker/**/__pycache__/
+**/*.pyc
+**/.DS_Store
