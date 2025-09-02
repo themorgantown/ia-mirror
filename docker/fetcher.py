@@ -139,12 +139,23 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
                          retries: int, progress_timeout: int, max_timeout: int,
                          checksum: bool, idx: int, total: int, max_mbps: float) -> Tuple[str, bool]:
     if _shutdown_event.is_set(): return filename, False
+    # Expected path (our layout)
     local_path = destdir / filename
+    # Alternate path: some ia versions add an extra identifier dir under --destdir
+    alt_local_path = destdir / identifier / filename
     if local_path.exists() and verify_local_file(ia, identifier, filename, local_path, checksum):
         _print_progress(f"✔ already have {filename}", idx, total)
         return filename, True
+    # Fallback: accept files that exist under the nested identifier directory
+    if alt_local_path.exists() and verify_local_file(ia, identifier, filename, alt_local_path, checksum):
+        _print_progress(f"✔ already have {identifier}/{filename}", idx, total)
+        return filename, True
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [ia, "download", identifier, filename, "--destdir", str(destdir)]
+    # Align ia's output folder with our expected layout.
+    # If destdir already ends with the identifier (non-collection mode), pass the parent
+    # to ia so it will create exactly one <identifier>/ layer.
+    ia_destdir = destdir.parent if destdir.name == str(identifier) else destdir
+    cmd = [ia, "download", identifier, filename, "--destdir", str(ia_destdir)]
     if checksum: cmd.append("--checksum")
     cmd += ["--retries", str(retries)]
     # Bandwidth cap via trickle if available
@@ -183,7 +194,10 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
             break
     stdout, stderr = proc.communicate()
     _running_processes.remove(proc)
-    success = proc.returncode == 0 and verify_local_file(ia, identifier, filename, local_path, checksum)
+    success = proc.returncode == 0 and (
+        verify_local_file(ia, identifier, filename, local_path, checksum)
+        or verify_local_file(ia, identifier, filename, alt_local_path, checksum)
+    )
     if not success:
         logging.error("Download failed for %s: %s %s", filename, stdout, stderr)
     return filename, success
@@ -414,10 +428,11 @@ def main():
         for item, fname in job_list:
             key = f"{item}/{fname}"
             local_path = dest / fname
+            alt_local_path = dest / item / fname
             
             # Check if file already exists and is valid
-            if (local_path.exists() and 
-                verify_local_file(ia, item, fname, local_path, args.checksum)):
+            if ((local_path.exists() and verify_local_file(ia, item, fname, local_path, args.checksum)) or
+                (alt_local_path.exists() and verify_local_file(ia, item, fname, alt_local_path, args.checksum))):
                 if key not in status["done"]:
                     status["done"].append(key)
             else:
@@ -439,7 +454,13 @@ def main():
             unknown_files += 1; continue
         total_remote_bytes += sz
         local_path = (dest / fname)
-        local_size = local_path.stat().st_size if local_path.exists() else 0
+        alt_local_path = dest / key[0] / key[1]
+        if local_path.exists():
+            local_size = local_path.stat().st_size
+        elif alt_local_path.exists():
+            local_size = alt_local_path.stat().st_size
+        else:
+            local_size = 0
         remaining = max(sz - local_size, 0)
         if remaining > 0: remaining_bytes += remaining
         known_files += 1
@@ -471,9 +492,13 @@ def main():
     if args.verify_only:
         ok=0
         for idx, (item,fname) in enumerate(job_list,1):
-            if verify_local_file(ia, item, fname, dest/fname, args.checksum):
+            p1 = dest/fname
+            p2 = dest/item/fname
+            if (verify_local_file(ia, item, fname, p1, args.checksum) or
+                verify_local_file(ia, item, fname, p2, args.checksum)):
                 ok+=1; _print_progress(f"✔ {fname}", idx, total_jobs)
-            else: print(f"\n❌ {fname}")
+            else:
+                print(f"\n✖ {fname}")
         print(f"\nVerified {ok}/{total_jobs} OK")
         write_report(dest/REPORT_FILENAME, {"schema_version":1,"status":"verify-only","ok":ok,"total":total_jobs,"config":cfg})
         return 0
