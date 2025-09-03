@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+    paths:
+      - 'README.md'
 
 jobs:
   sync-readme:
@@ -14,9 +16,9 @@ jobs:
         uses: actions/checkout@v5.0.0
 
       - name: Sync README to Docker Hub
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@v4.0.2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: themorgantown/ia-mirror
-          readme-filepath: ./README.md
+          readme-filepath: README.md

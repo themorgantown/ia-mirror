@@ -2,7 +2,7 @@
 
 Minimal Dockerized MVP for mirroring/downloading items from the Internet Archive using the `ia` CLI (via the `internetarchive` Python package).
 
-This repository provides a small container that wraps parallel downloads, resume, dry-run, checksum verification and a small summary `report.json` written alongside the downloaded data. Useful for large, resumed, or complex downloads where dockerization makes life easier. 
+This repository provides a small container that wraps parallel downloads, resume, dry-run, checksum verification and a small summary `report.json` written alongside the downloaded data. Useful for large, resumed, or complex downloads where dockerization makes life easier.
 
 ## QuickStart:
 
@@ -55,6 +55,8 @@ docker run --rm -v $(pwd)/mirror:/data ia-mirror:local The_Babe_Ruth_Collection 
   - mounting your host `~/.config/ia` into the container (read-only) — quick but exposes host config
   - environment variables `IA_ACCESS_KEY` and `IA_SECRET_KEY` (the entrypoint will generate `~/.config/ia/ia.ini` at runtime)
   - Docker secrets (recommended) — mount or inject into env in CI
+
+# Development
 
 ## Build (local)
 
