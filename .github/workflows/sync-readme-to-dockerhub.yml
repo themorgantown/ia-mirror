@@ -8,77 +8,15 @@ on:
 jobs:
   sync-readme:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5.0.0
 
       - name: Sync README to Docker Hub
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          DOCKERHUB_NAMESPACE: themorgantown
-          DOCKERHUB_REPO: ia-mirror
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os, json, sys, urllib.request, urllib.error
-
-          user = os.environ.get('DOCKERHUB_USERNAME')
-          pwd = os.environ.get('DOCKERHUB_TOKEN')
-          namespace = os.environ.get('DOCKERHUB_NAMESPACE')
-          repo = os.environ.get('DOCKERHUB_REPO')
-
-          if not all([user, pwd, namespace, repo]):
-              print('Missing required env vars (DOCKERHUB_USERNAME/DOCKERHUB_TOKEN/DOCKERHUB_NAMESPACE/DOCKERHUB_REPO)')
-              sys.exit(1)
-
-          # Login to Docker Hub API to obtain JWT token
-          login_url = 'https://hub.docker.com/v2/users/login/'
-          login_data = json.dumps({'username': user, 'password': pwd}).encode('utf-8')
-          login_req = urllib.request.Request(login_url, data=login_data, headers={'Content-Type': 'application/json'})
-          try:
-              with urllib.request.urlopen(login_req) as resp:
-                  token = json.load(resp).get('token')
-          except urllib.error.HTTPError as e:
-              print('Docker Hub login failed:', e.code, e.read().decode())
-              sys.exit(1)
-          except Exception as e:
-              print('Docker Hub login error:', e)
-              sys.exit(1)
-
-          if not token:
-              print('No token received from Docker Hub')
-              sys.exit(1)
-
-          # Read README.md
-          try:
-              with open('README.md', 'r', encoding='utf-8') as f:
-                  full = f.read()
-          except Exception as e:
-              print('Failed to read README.md:', e)
-              sys.exit(1)
-
-          # Patch repository full_description
-          patch_url = f'https://hub.docker.com/v2/repositories/{namespace}/{repo}/'
-          payload = json.dumps({'full_description': full}).encode('utf-8')
-          patch_req = urllib.request.Request(patch_url, data=payload, method='PATCH', headers={
-              'Content-Type': 'application/json',
-              'Authorization': f'JWT {token}'
-          })
-
-          try:
-              with urllib.request.urlopen(patch_req) as resp:
-                  body = resp.read().decode()
-                  print('Docker Hub repository updated successfully (status=%s)' % resp.status)
-                  # Print a short excerpt of response for debugging
-                  print(body[:1000])
-          except urllib.error.HTTPError as e:
-              print('Failed to update repository:', e.code, e.read().decode())
-              sys.exit(1)
-          except Exception as e:
-              print('Unexpected error updating repository:', e)
-              sys.exit(1)
-          PY
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: themorgantown/ia-mirror
+          readme: ./README.md
