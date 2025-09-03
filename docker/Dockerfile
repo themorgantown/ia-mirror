@@ -20,9 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -u 1000 -m -d /home/app app
 WORKDIR /app
 
-# Ensure pip/setuptools/wheel are reasonably recent, then pin internetarchive
-RUN python -m pip install --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir "internetarchive==${IA_PYPI_VERSION}"
+# Copy and install Python dependencies
+COPY requirements.txt /app/
+RUN python -m pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY fetcher.py entrypoint.sh /app/
@@ -44,3 +44,6 @@ LABEL org.opencontainers.image.title="ia-mirror" \
     org.opencontainers.image.authors="Daniel Morgan"
 
 ENTRYPOINT ["/usr/bin/tini","--","/app/entrypoint.sh"]
+
+HEALTHCHECK --interval=1m --timeout=10s --start-period=1m --retries=3 \
+    CMD ["/usr/local/bin/python", "/app/fetcher.py", "--print-effective-config"]

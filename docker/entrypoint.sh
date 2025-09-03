@@ -11,8 +11,8 @@ if [[ -n "${IA_ACCESS_KEY:-}" && -n "${IA_SECRET_KEY:-}" ]]; then
 access = ${IA_ACCESS_KEY}
 secret = ${IA_SECRET_KEY}
 EOF
-    chown -R app:app "$CONFIG_DIR" || true
-    chmod 600 "$CONFIG_DIR/ia.ini" || true
+    chown -R app:app "$CONFIG_DIR"
+    chmod 600 "$CONFIG_DIR/ia.ini"
   fi
 fi
 

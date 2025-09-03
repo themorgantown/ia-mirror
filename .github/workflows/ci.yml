@@ -29,6 +29,11 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Install and run pip-audit
+        run: |
+          python -m pip install pip-audit
+          pip-audit -r docker/requirements.txt
+
       - name: Syntax-check fetcher.py
         run: python -m py_compile docker/fetcher.py
 

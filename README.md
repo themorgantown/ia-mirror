@@ -2,7 +2,7 @@
 
 Minimal Dockerized MVP for mirroring/downloading items from the Internet Archive using the `ia` CLI (via the `internetarchive` Python package).
 
-This repository provides a small container that wraps parallel downloads, resume, dry-run, checksum verification and a small summary `report.json` written alongside the downloaded data.
+This repository provides a small container that wraps parallel downloads, resume, dry-run, checksum verification and a small summary `report.json` written alongside the downloaded data. Useful for large, resumed, or complex downloads where dockerization makes life easier. 
 
 ## QuickStart:
 
@@ -10,12 +10,9 @@ This repository provides a small container that wraps parallel downloads, resume
 docker run --rm \
   -v "$PWD/mirror:/data" \
   -e IA_IDENTIFIER=The_Babe_Ruth_Collection \
-  -e IA_COLLECTION=1 \
   -e IA_DESTDIR=/data \
   -e IA_ACCESS_KEY=your_access_key_here \
   -e IA_SECRET_KEY=your_secret_key_here \
-  -e IA_CONCURRENCY=3 \
-  -e IA_CHECKSUM=1 \
   ia-mirror:local
 ```
 
@@ -41,13 +38,16 @@ No credentials needed for public-item dry runs (use --dry-run).
 
 ## Examples:
 
-docker run --rm -v $(pwd)/mirror:/data -e IA_ITEM_NAME="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" ia-mirror:local
+docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" ia-mirror:local
 
 ### With more parallel downloads
-docker run --rm -v $(pwd)/mirror:/data -e IA_ITEM_NAME="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_CONCURRENCY="10" ia-mirror:local
+docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_CONCURRENCY="10" ia-mirror:local
 
 ### Dry run to see what would be downloaded
-docker run --rm -v $(pwd)/mirror:/data -e IA_ITEM_NAME="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_DRY_RUN="true" ia-mirror:local
+docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_DRY_RUN="true" ia-mirror:local
+
+### Verify-only (no downloads; checks local files)
+docker run --rm -v $(pwd)/mirror:/data ia-mirror:local The_Babe_Ruth_Collection --destdir /data --verify-only
 
 ## Quick concepts
 - Downloads are stored in the container-mounted `/data` volume (by default). Status and snapshots are stored in `DEST/.ia_status` and `DEST/report.json`.
@@ -127,6 +127,8 @@ Recommended for production: use Docker secrets or your orchestration's secret me
 - Status dir: `/data/<identifier>/.ia_status/<identifier>.json`
 - Snapshot report: `/data/<identifier>/report.json`
 - Log file: `/data/<identifier>/ia_download.log` (also streamed to stdout)
+
+Note on `--destdir` layout: the underlying `ia` CLI writes files under `<destdir>/<identifier>/...`. When you set `IA_DESTDIR=/data`, this wrapper resolves the working directory to `/data/<identifier>` for logs/status, and instructs `ia` to write to `/data` so files land in `/data/<identifier>/...` (no double-nesting). Using the examples above will produce the expected layout.
 
 ## Troubleshooting
 - If the image cannot find `ia`, ensure the `internetarchive` package version installed in the image provides the `ia` CLI (we pin with `IA_PYPI_VERSION` build arg). You can also bind a local `ia` binary into `/app/ia`.
