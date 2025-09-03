@@ -6,17 +6,23 @@ on:
     tags:
       - 'v*.*.*'
 
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5.0.0
+
+      - name: Compute version without v-prefix
+        run: |
+          NAME="${GITHUB_REF_NAME}"
+          echo "VERSION_NO_V=${NAME#v}" >> $GITHUB_ENV
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3.6.0
@@ -47,16 +53,8 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/ia-mirror:${{ github.ref_name }}
             ghcr.io/${{ github.repository_owner }}/ia-mirror:latest
+            themorgantown/ia-mirror:${{ github.ref_name }}
+            themorgantown/ia-mirror:${{ env.VERSION_NO_V }}
+            themorgantown/ia-mirror:latest
           build-args: |
             IA_PYPI_VERSION=5.5.0
-
-      - name: Create release entry (lightweight)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2.3.2
-        with:
-          files: |
-            docker/Dockerfile
-            docker/entrypoint.sh
-            docker/fetcher.py
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
