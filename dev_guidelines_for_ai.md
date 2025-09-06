@@ -81,5 +81,3 @@ docker run --rm \
 - Entry point writes `ia.ini` from env/secrets; never echo secret contents
 - Sensitive files (ia.ini) use restrictive perms
 
----
-If any section is out of date, point to the file(s) to update and we’ll make small, safe edits.
