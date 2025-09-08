@@ -10,6 +10,12 @@ Note: This is a small change to test the Docker Hub README sync workflow.
 
 ## QuickStart:
 
+Pull the latest published image (recommended):
+
+```bash
+docker pull themorgantown/ia-mirror:latest
+```
+
 ```
 docker run --rm \
   -v "$PWD/mirror:/data" \
@@ -17,7 +23,7 @@ docker run --rm \
   -e IA_DESTDIR=/data \
   -e IA_ACCESS_KEY=your_access_key_here \
   -e IA_SECRET_KEY=your_secret_key_here \
-  ia-mirror:local
+  themorgantown/ia-mirror:latest
 ```
 
 1. Obtain archive.org credentials:
@@ -42,16 +48,16 @@ No credentials needed for public-item dry runs (use --dry-run).
 
 ## Examples:
 
-docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" ia-mirror:local
+docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" themorgantown/ia-mirror:latest
 
 ### With more parallel downloads
-docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_CONCURRENCY="10" ia-mirror:local
+docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_CONCURRENCY="10" themorgantown/ia-mirror:latest
 
 ### Dry run to see what would be downloaded
-docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_DRY_RUN="true" ia-mirror:local
+docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_DRY_RUN="true" themorgantown/ia-mirror:latest
 
 ### Verify-only (no downloads; checks local files)
-docker run --rm -v $(pwd)/mirror:/data ia-mirror:local The_Babe_Ruth_Collection --destdir /data --verify-only
+docker run --rm -v $(pwd)/mirror:/data themorgantown/ia-mirror:latest The_Babe_Ruth_Collection --destdir /data --verify-only
 
 ## Quick concepts
 - Downloads are stored in the container-mounted `/data` volume (by default). Status and snapshots are stored in `DEST/.ia_status` and `DEST/report.json`.
@@ -88,7 +94,7 @@ Dry-run (no credentials needed for public items):
 docker run --rm \
   -v "$PWD/mirror:/data" \
   -e IA_IDENTIFIER=jillem-full-archive \
-  themorgantown/ia-mirror:0.1.0 --dry-run
+  themorgantown/ia-mirror:latest --dry-run
 ```
 
 Run with host `ia` config (quick):
@@ -100,7 +106,7 @@ docker run --rm \
   -e IA_IDENTIFIER=jillem-full-archive \
   -e IA_CONCURRENCY=6 \
   -e IA_CHECKSUM=1 \
-  themorgantown/ia-mirror:0.1.0
+  themorgantown/ia-mirror:latest
 ```
 
 Run using env creds (safer than mounting whole config):
@@ -111,7 +117,7 @@ docker run --rm \
   -e IA_IDENTIFIER=jillem-full-archive \
   -e IA_ACCESS_KEY=AKXXX -e IA_SECRET_KEY=SKYYY \
   -e IA_CONCURRENCY=6 \
-  themorgantown/ia-mirror:0.1.0
+  themorgantown/ia-mirror:latest
 ```
 
 Recommended for production: use Docker secrets or your orchestration's secret mechanism and inject into the container as env vars or bind a single secret file as `/run/secrets/ia.ini` then copy into `/home/app/.config/ia/ia.ini` at startup.
