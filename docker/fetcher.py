@@ -123,6 +123,96 @@ def verify_local_file(ia: str, identifier: str, filename: str, local_path: Path,
     return r.returncode == 0
 
 _spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# ---------- Global progress aggregation (for dynamic ETA) ----------
+_progress_lock = threading.Lock()
+_bytes_downloaded_total = 0              # Bytes downloaded during this run (delta only)
+_bytes_downloaded_initial = 0            # Bytes that were already present when run started
+_total_known_bytes = 0                   # Sum of known remote sizes (only known files)
+_remaining_known_bytes_start = 0         # Remaining bytes at start (known)
+_current_speed_mbps = 0.0                # Moving average speed (Mbps)
+_last_speed_calc_ts = 0.0
+_eta_seconds = 0.0
+_speed_sample_interval = 30              # Seconds between speed sampling windows
+_speed_sampler_stop = threading.Event()
+_file_last_sizes = {}                   # Map of canonical local file path -> last observed size
+
+def _format_eta(seconds: float) -> str:
+    if seconds <= 0 or seconds == float('inf'): return 'n/a'
+    if seconds < 60: return f"{int(seconds)}s"
+    m = seconds/60
+    if m < 60: return f"{m:.1f}m"
+    h = m/60
+    if h < 48: return f"{h:.2f}h"
+    d = h/24
+    return f"{d:.1f}d"
+
+def _update_aggregate_bytes(filepath: Path, current_size: int):
+    """Track byte deltas for a given file path to avoid double counting when sampled by multiple threads."""
+    global _bytes_downloaded_total
+    try:
+        with _progress_lock:
+            prev = _file_last_sizes.get(filepath)
+            if prev is None:
+                _file_last_sizes[filepath] = current_size
+                # First observation yields no delta (we don't know what portion was from this run yet)
+                return
+            if current_size > prev:
+                delta = current_size - prev
+                _bytes_downloaded_total += delta
+                _file_last_sizes[filepath] = current_size
+    except Exception:
+        pass
+
+def _recompute_eta():
+    global _eta_seconds
+    with _progress_lock:
+        remaining = max(_total_known_bytes - (_bytes_downloaded_initial + _bytes_downloaded_total), 0)
+        speed_bps = (_current_speed_mbps * 1_000_000) / 8 if _current_speed_mbps > 0 else 0
+        _eta_seconds = remaining / speed_bps if speed_bps > 0 else 0
+
+def _speed_sampler_thread(initial_assumed_mbps: float):
+    """Background thread: compute aggregate throughput. First sample sooner (<=5s)."""
+    global _current_speed_mbps, _last_speed_calc_ts
+    last_bytes = 0
+    last_ts = time.time()
+    first = True
+    while not _speed_sampler_stop.is_set():
+        time.sleep(min(5, _speed_sample_interval) if first else _speed_sample_interval)
+        now = time.time()
+        with _progress_lock:
+            cur_bytes = _bytes_downloaded_total
+        delta_bytes = cur_bytes - last_bytes
+        delta_t = now - last_ts
+        if delta_t <= 0: delta_t = 1
+        if delta_bytes > 0:
+            mbps = (delta_bytes * 8) / 1_000_000 / delta_t
+            if _current_speed_mbps <= 0:
+                _current_speed_mbps = mbps
+            else:
+                _current_speed_mbps = (_current_speed_mbps * 0.3) + (mbps * 0.7)
+            _last_speed_calc_ts = now
+        elif _current_speed_mbps <= 0:
+            _current_speed_mbps = initial_assumed_mbps
+        last_bytes = cur_bytes
+        last_ts = now
+        _recompute_eta()
+        first = False
+
+def _aggregate_progress_string() -> str:
+    with _progress_lock:
+        known_total = _total_known_bytes
+        done_now = _bytes_downloaded_initial + _bytes_downloaded_total
+        if known_total > 0:
+            pct = (done_now / known_total * 100)
+            total_str = _human_bytes(known_total)
+            eta_str = _format_eta(_eta_seconds)
+        else:
+            pct = 0.0
+            total_str = "?"
+            eta_str = 'n/a'
+        speed = _current_speed_mbps
+    return f"Agg: {_human_bytes(done_now)}/{total_str} ({pct:5.1f}%) Speed: {speed:6.1f} Mbps ETA: {eta_str}"
 def _human_bytes(num: float) -> str:
     for unit in ("B","KB","MB","GB","TB"):
         if num < 1024.0: return f"{num:3.1f}{unit}"
@@ -132,7 +222,10 @@ def _human_bytes(num: float) -> str:
 def _print_progress(msg: str, idx: int, total: int, counter=[0]) -> None:
     counter[0] = (counter[0] + 1) % len(_spinner_chars)
     spin = _spinner_chars[counter[0]]
-    sys.stdout.write(f"\r{spin} {idx}/{total} {msg:<70}")
+    agg = _aggregate_progress_string()
+    # Truncate msg for consistent line length
+    trimmed = (msg[:60] + '…') if len(msg) > 63 else msg
+    sys.stdout.write(f"\r{spin} {idx}/{total} {trimmed:<65} | {agg}")
     sys.stdout.flush()
 
 def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
@@ -177,8 +270,15 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
             proc.terminate(); break
         time.sleep(1)
         now = time.time()
+        # Support alt path (identifier nested). Use whichever exists.
+        observed_path = None
         if local_path.exists():
-            size = local_path.stat().st_size
+            observed_path = local_path
+        elif alt_local_path.exists():
+            observed_path = alt_local_path
+        if observed_path is not None:
+            size = observed_path.stat().st_size
+            _update_aggregate_bytes(observed_path, size)
             _print_progress(f"{filename[:40]:40} {_human_bytes(size)}", idx, total)
             if size > 0: last_progress_time = now
         if (now-last_progress_time) > progress_timeout or (now-start) > max_timeout:
@@ -293,6 +393,8 @@ def main():
     ap.add_argument("--max-mbps", type=float, default=0.0, help="Throttle max bandwidth (Mbps, approx) using trickle if available")
     ap.add_argument("--assumed-mbps", type=float, default=float(os.environ.get("IA_ASSUMED_MBPS", "100")), help="Assumed bandwidth for ETA if uncapped")
     ap.add_argument("--cost-per-gb", type=float, default=float(os.environ.get("IA_COST_PER_GB", "0")), help="Optional cost per GB (USD) for estimate")
+    ap.add_argument("--dryrun-mbps", type=float, default=500.0, help="Simulation speed (Mbps) for --dry-run dynamic ETA (default 500 Mbps)")
+    ap.add_argument("--speed-sample-interval", type=int, default=30, help="Interval in seconds for aggregate speed sampling (default 30)")
     ap.add_argument("--print-effective-config", action="store_true", help="Print derived configuration (env + args) and exit")
     args = ap.parse_args()
 
@@ -489,6 +591,15 @@ def main():
         print(" Exiting due to --estimate-only")
         write_report(dest/REPORT_FILENAME, {"schema_version":1,"status":"estimate-only","config":cfg})
         return 0
+    # If dry-run we simulate dynamic ETA using provided dryrun speed.
+    if args.dry_run:
+        sim_speed_mbps = args.dryrun_mbps if args.dryrun_mbps > 0 else 500.0
+        # Recompute ETA under simulation speed using remaining_bytes
+        sim_seconds = (remaining_bytes * 8) / (sim_speed_mbps * 1_000_000) if sim_speed_mbps > 0 else 0
+        sim_eta = _format_eta(sim_seconds)
+        print(f"\n🧪 Dry-run simulation assuming {sim_speed_mbps:.1f} Mbps: ETA {sim_eta}")
+        print("(Use --dryrun-mbps to adjust simulation speed.)")
+        return 0
     if args.verify_only:
         ok=0
         for idx, (item,fname) in enumerate(job_list,1):
@@ -508,6 +619,18 @@ def main():
     already_had = list(status.get('done', []))  # Files that were already complete before we started
     
     print(f"📋 {len(status['pending'])} files pending, {len(status['done'])} done.")
+
+    # ---------- Initialize aggregate progress globals ----------
+    global _total_known_bytes, _remaining_known_bytes_start, _bytes_downloaded_initial, _speed_sample_interval
+    _total_known_bytes = total_remote_bytes
+    _remaining_known_bytes_start = remaining_bytes
+    _bytes_downloaded_initial = total_remote_bytes - remaining_bytes
+    _speed_sample_interval = max(5, args.speed_sample_interval)  # enforce a sane minimum
+
+    # Start sampler thread
+    initial_assumed = assumed_mbps if assumed_mbps > 0 else args.assumed_mbps
+    sampler = threading.Thread(target=_speed_sampler_thread, args=(initial_assumed,), daemon=True)
+    sampler.start()
     start_ts = time.time()
     try:
         with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
@@ -559,6 +682,11 @@ def main():
             "timestamp_utc": end_ts,
             "config": cfg,
         })
+        _speed_sampler_stop.set()
+        try:
+            sampler.join(timeout=2)
+        except Exception:
+            pass
 
     print("\n📊 Summary")
     print(f"✅ Total Complete: {len(status['done'])}")
