@@ -1,0 +1,4 @@
+# Enforce LF line endings inside the repo for scripts executed in Linux containers
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.py text eol=lf
