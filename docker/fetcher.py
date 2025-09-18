@@ -6,6 +6,7 @@ dry-run, verify-only, estimation, resumefolders optimization, bandwidth cap (via
 cost/time estimation, graceful termination.
 """
 import argparse, json, logging, os, shutil, signal, subprocess, sys, threading, time, math
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Tuple
@@ -100,23 +101,81 @@ def find_ia_executable(custom: str|None=None) -> str:
         here = Path(__file__).resolve().parent / "ia"
         if here.is_file():
             ia_path = str(here)
-    if not ia_path or not Path(ia_path).exists():
+    if not ia_path or not Path(ia_path).exists() or not os.access(ia_path, os.X_OK):
         sys.exit("❌ Could not locate IA CLI. Add to PATH or use --ia-path.")
     return ia_path
 
+# ---------- Minimal input validation/sanitization ----------
+_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+_GLOB_RE = re.compile(r"^[A-Za-z0-9._,*?\-\[\]{}!+/ ()]+$")
+
+def _validate_identifier(identifier: str) -> None:
+    if not identifier or not _ID_RE.fullmatch(identifier):
+        raise ValueError("invalid identifier")
+
+def _validate_glob(glob_pattern: str) -> None:
+    # Not using shell=true, but constrain length and characters to avoid surprises
+    if glob_pattern is None or len(glob_pattern) > 512 or not _GLOB_RE.fullmatch(glob_pattern):
+        raise ValueError("invalid glob pattern")
+
+def _is_within(base: Path, candidate: Path) -> bool:
+    try:
+        base_res = base.resolve()
+        cand_res = candidate.resolve()
+        return os.path.commonpath([str(base_res), str(cand_res)]) == str(base_res)
+    except Exception:
+        return False
+
+def _is_safe_filename(relpath: str) -> bool:
+    # Allow nested paths but forbid absolute paths, parent traversal, NUL/newlines
+    if not relpath or any(ch in relpath for ch in ("\x00", "\r", "\n")):
+        return False
+    if os.path.isabs(relpath):
+        return False
+    norm = os.path.normpath(relpath)
+    # norm can collapse to '.' for empty or current dir; reject specials or upward traversal
+    if norm.startswith("..") or norm in (".", ""):
+        return False
+    return True
+
 def run_cmd(cmd: List[str]) -> subprocess.CompletedProcess:
     logging.debug("CMD %s", " ".join(cmd))
+    # nosec B603: using subprocess without shell; argv list built from validated inputs
+    # Basic sanity on args to avoid control chars
+    try:
+        for a in cmd:
+            if isinstance(a, str) and ("\x00" in a or "\n" in a or "\r" in a):
+                raise ValueError("illegal control char in argument")
+    except Exception:
+        raise
     return subprocess.run(cmd, capture_output=True, text=True)
 
 def get_file_list(ia: str, identifier: str, glob_pattern: str) -> List[str]:
+    # Validate inputs to avoid unsafe args; we never use shell=True but we still
+    # guard against dangerous characters and excessive length.
+    _validate_identifier(identifier)
+    _validate_glob(glob_pattern)
     r = run_cmd([ia, "list", identifier, "--glob", glob_pattern])
-    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
+    files = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
+    # Filter out any suspicious entries just in case
+    return [f for f in files if _is_safe_filename(f)]
 
 def get_collection_items(ia: str, collection_id: str) -> List[str]:
+    _validate_identifier(collection_id)
     r = run_cmd([ia, "search", f'collection:"{collection_id}"', "--itemlist"])
-    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
+    items = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
+    # Keep only identifiers that pass our sanity check
+    return [it for it in items if _ID_RE.fullmatch(it)]
 
 def verify_local_file(ia: str, identifier: str, filename: str, local_path: Path, checksum: bool) -> bool:
+    try:
+        _validate_identifier(identifier)
+    except Exception:
+        return False
+    # Reject unsafe filenames to prevent directory traversal and weird device paths
+    if not _is_safe_filename(filename):
+        logging.error("Unsafe filename rejected: %s", filename)
+        return False
     if not local_path.exists() or local_path.stat().st_size == 0: return False
     if not checksum: return True
     r = run_cmd([ia, "verify", identifier, filename, "--quiet"])
@@ -231,11 +290,23 @@ def _print_progress(msg: str, idx: int, total: int, counter=[0]) -> None:
 def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
                          retries: int, progress_timeout: int, max_timeout: int,
                          checksum: bool, idx: int, total: int, max_mbps: float) -> Tuple[str, bool]:
+    # Validate args upfront
+    try:
+        _validate_identifier(identifier)
+        if not _is_safe_filename(filename):
+            raise ValueError(f"unsafe filename: {filename}")
+    except Exception as e:
+        logging.error("Validation failed for %s/%s: %s", identifier, filename, e)
+        return filename, False
     if _shutdown_event.is_set(): return filename, False
     # Expected path (our layout)
     local_path = destdir / filename
     # Alternate path: some ia versions add an extra identifier dir under --destdir
     alt_local_path = destdir / identifier / filename
+    # Ensure both candidate paths remain within destdir
+    if not (_is_within(destdir, local_path) and _is_within(destdir, alt_local_path)):
+        logging.error("Path traversal detected for %s", filename)
+        return filename, False
     if local_path.exists() and verify_local_file(ia, identifier, filename, local_path, checksum):
         _print_progress(f"✔ already have {filename}", idx, total)
         return filename, True
@@ -262,6 +333,7 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
     start = time.time()
     env = os.environ.copy()
     env.setdefault("PYTHONWARNINGS", "ignore")
+    # nosec B602: shell not used; args validated; env controlled
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     _running_processes.append(proc)
     last_progress_time = start
@@ -377,7 +449,7 @@ def main():
     ap = argparse.ArgumentParser(description="Parallel IA downloader with resume + mirror")
     ap.add_argument("identifier", nargs='?', help="Item or collection ID (required unless --print-effective-config)")
     ap.add_argument("--destdir", help="Destination directory (default: ./<identifier>)")
-    ap.add_argument("-g","--glob", default="*", help="Glob pattern (default: all files)")
+    ap.add_argument("-g","--glob", default="*", help="Glob pattern for files to download (default '*' = all files)")
     ap.add_argument("-j","--concurrency", type=int, default=5, help="Parallel workers (default 5)")
     ap.add_argument("--retries", type=int, default=5, help="Retries per file")
     ap.add_argument("--progress-timeout", type=int, default=900, help="No-progress timeout (s)")
@@ -414,6 +486,17 @@ def main():
     dest.mkdir(parents=True, exist_ok=True)
     init_logging(dest)
     ia = find_ia_executable(args.ia_path)
+
+    # Basic validation of external-facing inputs
+    if args.identifier:
+        try:
+            _validate_identifier(args.identifier)
+        except Exception as e:
+            sys.exit(f"❌ Invalid identifier: {e}")
+    try:
+        _validate_glob(args.glob)
+    except Exception as e:
+        sys.exit(f"❌ Invalid glob pattern: {e}")
 
     cfg = {
         "identifier": args.identifier,
@@ -469,6 +552,7 @@ def main():
         size_map = {}
         for it in items_list:
             try:
+                _validate_identifier(it)
                 r = run_cmd([ia, "metadata", it])
                 if r.returncode != 0:
                     continue
@@ -476,7 +560,7 @@ def main():
                 for f in meta.get("files", []):
                     name = f.get("name")
                     size = f.get("size")
-                    if name and isinstance(size, (int, float)):
+                    if name and _is_safe_filename(name) and isinstance(size, (int, float)):
                         size_map[(it, name)] = int(size)
             except Exception as e:
                 logging.warning("Failed metadata fetch for %s: %s", it, e)
@@ -506,7 +590,11 @@ def main():
             for _,fn in will_download: print(f"  DOWNLOAD: {fn}")
             return 0
     else:
-        job_list = [(item,f) for item in items for f in get_file_list(ia, item, args.glob)]
+        job_list = []
+        for item in items:
+            for f in get_file_list(ia, item, args.glob):
+                if _is_safe_filename(f):
+                    job_list.append((item, f))
 
     logging.info("Found %d items to process: %s", len(items), items)
     logging.info("Built job list with %d files", len(job_list))
@@ -605,6 +693,9 @@ def main():
         for idx, (item,fname) in enumerate(job_list,1):
             p1 = dest/fname
             p2 = dest/item/fname
+            if not _is_safe_filename(fname):
+                print(f"\n✖ unsafe filename skipped: {fname}")
+                continue
             if (verify_local_file(ia, item, fname, p1, args.checksum) or
                 verify_local_file(ia, item, fname, p2, args.checksum)):
                 ok+=1; _print_progress(f"✔ {fname}", idx, total_jobs)

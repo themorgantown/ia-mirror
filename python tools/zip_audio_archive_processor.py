@@ -48,6 +48,15 @@ import re
 import time
 import subprocess
 
+# Basic path safety helpers
+def _is_within(base: Path, candidate: Path) -> bool:
+    try:
+        base_res = base.resolve()
+        cand_res = candidate.resolve()
+        return os.path.commonpath([str(base_res), str(cand_res)]) == str(base_res)
+    except Exception:
+        return False
+
 # ======================
 # CONFIG
 # ======================
@@ -63,7 +72,12 @@ else:
         ARCHIVE_DIR = Path(env_val).expanduser().resolve()
     else:
         ARCHIVE_DIR = Path(__file__).resolve().parent / "@toprocess"
-        ARCHIVE_DIR = ARCHIVE_DIR.resolve()
+    ARCHIVE_DIR = ARCHIVE_DIR.resolve()
+
+# Ensure ARCHIVE_DIR is not root and writable
+if str(ARCHIVE_DIR) in ("/", ""):
+    print("Refusing to operate on root directory", file=sys.stderr)
+    sys.exit(2)
 
 # Keep processed inside the chosen archive directory for consistency.
 PROCESSED_DIR = ARCHIVE_DIR / "processed"
@@ -147,6 +161,7 @@ def convert_flac_to_mp3(flac_files):
         if mp3_path.exists():
             return ("mp3_exists", fpath)
         try:
+            # nosec B603: calling ffmpeg with explicit argv; no shell; file paths validated by pathlib
             subprocess.run([
                 "ffmpeg", "-y", "-i", str(fpath),
                 "-c:a", "libmp3lame", "-b:a", "320k",

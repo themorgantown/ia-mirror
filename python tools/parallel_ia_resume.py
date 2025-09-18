@@ -39,6 +39,7 @@ for existing folders and skip downloads accordingly.
 from __future__ import annotations
 
 import argparse
+import re
 import logging
 import os
 import shutil
@@ -87,11 +88,37 @@ def find_ia_executable(custom: str | None = None) -> str:
         sys.exit("❌ Could not locate the Internet-Archive CLI (`ia`). Add to $PATH or pass --ia-path.")
     return ia_path
 
+# ---------------- Validation helpers (command injection hardening) ---------------- #
+_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+
+def _validate_identifier(identifier: str) -> None:
+    if not identifier or not _ID_RE.fullmatch(identifier):
+        sys.exit("❌ Invalid IA identifier")
+
+def _is_safe_filename(relpath: str) -> bool:
+    if not relpath or any(ch in relpath for ch in ("\x00", "\r", "\n")):
+        return False
+    if os.path.isabs(relpath):
+        return False
+    norm = os.path.normpath(relpath)
+    if norm.startswith("..") or norm in (".", ""):
+        return False
+    return True
+
+def _is_within(base: Path, candidate: Path) -> bool:
+    try:
+        base_res = base.resolve()
+        cand_res = candidate.resolve()
+        return os.path.commonpath([str(base_res), str(cand_res)]) == str(base_res)
+    except Exception:
+        return False
+
 
 # ---------------------------------------------------------------------------#
 def run_cmd(cmd: List[str], **kw) -> subprocess.CompletedProcess:
     """Wrapper around subprocess.run with logging."""
     logging.debug("CMD %s", " ".join(cmd))
+    # nosec B603: shell not used, args validated upstream
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 
@@ -116,11 +143,13 @@ def list_item_zip_files(ia: str, identifier: str) -> List[str]:
     """Return list of .zip file names present in the IA item.
     Uses `ia list` and filters for lines ending with .zip.
     """
+    _validate_identifier(identifier)
     result = run_cmd([ia, "list", identifier])
     if result.returncode != 0:
         logging.error("Failed to list item %s: %s", identifier, result.stderr)
         sys.exit(f"❌ Could not list item {identifier}")
     zips = [line.strip() for line in result.stdout.splitlines() if line.strip().endswith(".zip")]
+    zips = [z for z in zips if _is_safe_filename(z)]
     logging.info("Found %d zip(s) in item %s", len(zips), identifier)
     return zips
 
@@ -156,6 +185,9 @@ def discover_missing_folder_zips(ia: str, identifier: str, unpacked_root: Path) 
 
 # ---------------------------------------------------------------------------#
 def verify_local_file(ia: str, identifier: str, filename: str, local_path: Path) -> bool:
+    if not _is_safe_filename(filename):
+        logging.error("Unsafe filename rejected: %s", filename)
+        return False
     if not local_path.exists() or local_path.stat().st_size == 0:
         return False
     # quick, silent checksum verification via IA CLI
@@ -203,6 +235,14 @@ def download_single_file(
     total: int,
     unpacked_root: Path | None = None,
 ) -> Tuple[str, bool]:
+    # Validate inputs
+    try:
+        _validate_identifier(identifier)
+        if not _is_safe_filename(filename):
+            raise ValueError("unsafe filename")
+    except Exception as e:
+        logging.error("Validation failed for %s/%s: %s", identifier, filename, e)
+        return filename, False
 
     if _shutdown_event.is_set():
         return filename, False
@@ -224,6 +264,9 @@ def download_single_file(
             logging.info("Will download %s - folder missing or empty: exists=%s, empty=%s", filename, folder_path.exists(), dir_is_empty(folder_path))
 
     local_path = destdir / filename
+    if not _is_within(destdir, local_path):
+        logging.error("Path traversal detected for %s", filename)
+        return filename, False
     if local_path.exists():
         if verify_local_file(ia, identifier, filename, local_path):
             _print_progress(f"✔ already have {filename}", index, total)
@@ -247,6 +290,7 @@ def download_single_file(
     ]
 
     start = time.time()
+    # nosec B602: Popen without shell; inputs validated
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     _running_processes.append(proc)
 

@@ -66,6 +66,31 @@ docker run --rm -v $(pwd)/mirror:/data themorgantown/ia-mirror:latest The_Babe_R
   - environment variables `IA_ACCESS_KEY` and `IA_SECRET_KEY` (the entrypoint will generate `~/.config/ia/ia.ini` at runtime)
   - Docker secrets (recommended) — mount or inject into env in CI
 
+### Glob / File Selection
+By default the tool downloads ALL files for an item (equivalent to passing `--glob "*"`). You only need to specify a glob if you want to narrow the set.
+
+You can filter the files fetched from each item by providing a glob pattern via either:
+
+- CLI: `-g "*.mp3"` or `--glob "*.{mp3,flac}"`
+- Env: `IA_GLOB=*.mp3`
+
+Patterns are passed directly to `ia list --glob` (no local shell expansion). Quote the argument in your shell so that `*` is not expanded before reaching the container.
+
+Common examples:
+
+```
+IA_GLOB=*.zip            # Only ZIP archives
+IA_GLOB=*.{mp3,flac}     # Audio originals (brace expansion supported by IA CLI)
+IA_GLOB=*2024*           # Any file name containing 2024
+IA_GLOB=*/scans/*        # Files within a scans/ subdirectory
+```
+
+Notes:
+- Leaving `IA_GLOB` unset (or using `-g '*'`) mirrors everything.
+- When combining with `--collection`, the same glob applies to each item discovered.
+- The project performs additional filename safety validation; unusual paths like `../secret` are ignored.
+- Exclusion patterns (`--exclude`) are not currently surfaced by this wrapper; if needed you can extend the invocation logic.
+
 # Development
 
 ## Build (local)

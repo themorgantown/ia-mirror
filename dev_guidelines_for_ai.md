@@ -29,7 +29,7 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
 ## Project conventions
 - Env→CLI injection (when no explicit args):
   - booleans: `IA_DRY_RUN`, `IA_CHECKSUM`, `IA_VERIFY_ONLY`, `IA_COLLECTION`, ...
-  - values: `IA_DESTDIR`, `IA_CONCURRENCY` (-j), `IA_GLOB`, `IA_MAX_MBPS`/`IA_MAX_Mbps`, `IA_ASSUMED_MBPS`/`IA_ASSUMED_Mbps`
+  - values: `IA_DESTDIR`, `IA_CONCURRENCY` (-j), `IA_GLOB` (optional; unset = all files), `IA_MAX_MBPS`/`IA_MAX_Mbps`, `IA_ASSUMED_MBPS`/`IA_ASSUMED_Mbps`
   - prefer `IA_IDENTIFIER` (legacy: `IA_ITEM_NAME`)
 - Destdir layout: set `IA_DESTDIR=/data` to avoid double-nesting; wrapper aligns logs/status alongside the identifier
 - Status persistence: `.ia_status` + `report.json`; graceful SIGTERM snapshot for resume
