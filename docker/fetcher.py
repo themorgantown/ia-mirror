@@ -102,6 +102,7 @@ def find_ia_executable(custom: str|None=None) -> str:
         if here.is_file():
             ia_path = str(here)
     if not ia_path or not Path(ia_path).exists() or not os.access(ia_path, os.X_OK):
+        logging.error("Could not locate IA CLI. Checked PATH for 'ia', also checked local file '%s'. Add to PATH or use --ia-path.", here)
         sys.exit("❌ Could not locate IA CLI. Add to PATH or use --ia-path.")
     return ia_path
 
@@ -354,7 +355,7 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
             _print_progress(f"{filename[:40]:40} {_human_bytes(size)}", idx, total)
             if size > 0: last_progress_time = now
         if (now-last_progress_time) > progress_timeout or (now-start) > max_timeout:
-            logging.error("Timeout on %s", filename)
+            logging.error("Timeout on %s/%s after %.1f seconds", identifier, filename, now-start)
             try: proc.send_signal(signal.SIGINT)
             except Exception: pass
             for _ in range(10):
@@ -371,7 +372,8 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
         or verify_local_file(ia, identifier, filename, alt_local_path, checksum)
     )
     if not success:
-        logging.error("Download failed for %s: %s %s", filename, stdout, stderr)
+        logging.error("Download failed for %s/%s (exit code: %d): stdout='%s' stderr='%s'", 
+                     identifier, filename, proc.returncode, stdout.strip(), stderr.strip())
     return filename, success
 
 # ---------- Signals ----------
@@ -437,6 +439,7 @@ def inject_env_args():
             argv.extend([tup[0], v])
 
     sys.argv = argv
+    logging.debug("Injected environment variables into arguments")
 
 def write_report(report_path: Path, data: dict):
     try:
@@ -533,8 +536,12 @@ def main():
             # Update config to reflect the fallback
             cfg["collection"] = False
             cfg["fallback_to_item"] = True
+            logging.info("Falling back to single item mode for '%s'", args.identifier)
+        else:
+            logging.info("Processing as collection: %s with %d items", args.identifier, len(items))
     else:
         items = [args.identifier]
+        logging.info("Processing as single item: %s", args.identifier)
 
     # Log what we're about to process
     if len(items) == 1 and items[0] == args.identifier:
@@ -749,7 +756,7 @@ def main():
                 _, success = fut.result()
             except Exception as e:
                 success = False
-                logging.error("Exception on %s: %s", fname, e)
+                logging.error("Exception on %s/%s: %s", item, fname, e)
             key = f"{item}/{fname}"
             if success:
                 newly_downloaded.append(key)

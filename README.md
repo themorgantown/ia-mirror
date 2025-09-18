@@ -1,22 +1,46 @@
-# ia-mirror (Dockerized Internet Archive mirror utility)
+# ia-mirror 🚀 (Dockerized Internet Archive Mirror Utility)
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/themorgantown/ia-mirror)](https://hub.docker.com/r/themorgantown/ia-mirror)  
+[![Docker Pulls](https://img.shields.io/docker/pulls/themorgantown/ia-mirror)](https://hub.docker.com/r/themorgantown/ia-mirror)
+
+**Easily mirror and download Internet Archive collections with a single Docker command!**
 
 Minimal Dockerized MVP for mirroring/downloading items from the Internet Archive using the `ia` CLI (via the `internetarchive` Python package).
 
 This repository provides a small container that wraps parallel downloads, resume, dry-run, checksum verification and a small summary `report.json` written alongside the downloaded data. Useful for large, resumed, or complex downloads where dockerization makes life easier.
 
-Note: This is a small change to test the Docker Hub README sync workflow.
+> **Note**: This is a small change to test the Docker Hub README sync workflow.
 
-## QuickStart:
+## 📚 Table of Contents
+- [✨ Features](#-features)
+- [⚡ QuickStart](#-quickstart)
+- [📘 Examples](#-examples)
+- [⚙️ Configuration](#️-configuration)
+- [📂 Files & Outputs](#-files--outputs)
+- [💻 Development](#-development)
+- [🛡️ Security](#️-security)
+- [🤝 Contributing](#-contributing)
+- [🔧 Troubleshooting](#-troubleshooting)
 
-Pull the latest published image (recommended):
+## ✨ Features
 
+- 🐳 **Dockerized** - Run anywhere with Docker
+- ⚡ **Parallel Downloads** - Speed up downloads with concurrent connections
+- 🔄 **Resume Support** - Automatically resume interrupted downloads
+- 🔍 **Dry Run Mode** - Test before downloading
+- ✅ **Checksum Verification** - Verify file integrity
+- 📊 **Status Tracking** - Monitor download progress with `report.json`
+- 🔐 **Secure Authentication** - Multiple auth methods supported
+- 🎯 **File Selection** - Download specific files with glob patterns
+
+## ⚡ QuickStart
+
+### 1. Pull the Image
 ```bash
 docker pull themorgantown/ia-mirror:latest
 ```
 
-```
+### 2. Run a Basic Download
+```bash
 docker run --rm \
   -v "$PWD/mirror:/data" \
   -e IA_IDENTIFIER=The_Babe_Ruth_Collection \
@@ -26,95 +50,114 @@ docker run --rm \
   themorgantown/ia-mirror:latest
 ```
 
-1. Obtain archive.org credentials:
-  - Create an account (https://archive.org/account/login).
-  - Generate or locate your access key and secret at https://archive.org/account/s3.php.
+### 3. Get Your Credentials
+- Create an account at [https://archive.org/account/login](https://archive.org/account/login)
+- Generate or locate your access key and secret at [https://archive.org/account/s3.php](https://archive.org/account/s3.php)
 
-2. (Host config method) On your host run:
-  ia configure
-  This creates ~/.config/ia/ia.ini. Then run the container mounting it read-only:
-  -v "$HOME/.config/ia:/home/app/.config/ia:ro"
+### 4. Authentication Methods
 
-3. (Env var method – recommended for ephemeral creds) Supply:
-  -e IA_ACCESS_KEY=XXXX -e IA_SECRET_KEY=YYYY
-  The entrypoint writes /home/app/.config/ia/ia.ini at runtime.
+**Host Config Method** (Quick but exposes host config):
+```bash
+ia configure  # Creates ~/.config/ia/ia.ini
+# Then run container mounting it read-only:
+-v "$HOME/.config/ia:/home/app/.config/ia:ro"
+```
 
-4. (Docker secrets) Store ia.ini contents (or just key/secret lines) in a secret, mount it (e.g. /run/secrets/ia.ini), then copy or cat it to /home/app/.config/ia/ia.ini via a small wrapper script or custom entrypoint.
+**Environment Variables Method** (Recommended for ephemeral creds):
+```bash
+-e IA_ACCESS_KEY=XXXX -e IA_SECRET_KEY=YYYY
+# The entrypoint writes /home/app/.config/ia/ia.ini at runtime
+```
 
-5. Verify inside a running container (optional):
-  docker exec -it <container> ia whoami
+**Docker Secrets Method** (Recommended for production):
+Store ia.ini contents in a secret, mount it, then copy to `/home/app/.config/ia/ia.ini`
 
-No credentials needed for public-item dry runs (use --dry-run).  
+### 5. Verify Inside Container (Optional)
+```bash
+docker exec -it <container> ia whoami
+```
 
-## Examples:
+> No credentials needed for public-item dry runs (use `--dry-run`).
 
+## 📘 Examples
+
+### Basic Download
+```bash
 docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" themorgantown/ia-mirror:latest
+```
 
-### With more parallel downloads
+### With More Parallel Downloads
+```bash
 docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_CONCURRENCY="10" themorgantown/ia-mirror:latest
+```
 
-### Dry run to see what would be downloaded
+### Dry Run (No Download)
+```bash
 docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_DRY_RUN="true" themorgantown/ia-mirror:latest
+```
 
-### Verify-only (no downloads; checks local files)
+### Verify Only (No Downloads)
+```bash
 docker run --rm -v $(pwd)/mirror:/data themorgantown/ia-mirror:latest The_Babe_Ruth_Collection --destdir /data --verify-only
-
-## Quick concepts
-- Downloads are stored in the container-mounted `/data` volume (by default). Status and snapshots are stored in `DEST/.ia_status` and `DEST/report.json`.
-- Authentication can be provided via:
-  - mounting your host `~/.config/ia` into the container (read-only) — quick but exposes host config
-  - environment variables `IA_ACCESS_KEY` and `IA_SECRET_KEY` (the entrypoint will generate `~/.config/ia/ia.ini` at runtime)
-  - Docker secrets (recommended) — mount or inject into env in CI
-
-### Glob / File Selection
-By default the tool downloads ALL files for an item (equivalent to passing `--glob "*"`). You only need to specify a glob if you want to narrow the set.
-
-You can filter the files fetched from each item by providing a glob pattern via either:
-
-- CLI: `-g "*.mp3"` or `--glob "*.{mp3,flac}"`
-- Env: `IA_GLOB=*.mp3`
-
-Patterns are passed directly to `ia list --glob` (no local shell expansion). Quote the argument in your shell so that `*` is not expanded before reaching the container.
-
-Common examples:
-
 ```
+
+## ⚙️ Configuration
+
+### Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `IA_IDENTIFIER` | Item or collection identifier | ✅ |
+| `IA_DESTDIR` | Destination directory under /data | |
+| `IA_CONCURRENCY` | Parallel workers (default 5) | |
+| `IA_CHECKSUM` | Enable checksums | |
+| `IA_DRY_RUN` | Dry-run mode | |
+| `IA_VERIFY_ONLY` | Verify existing files only | |
+| `IA_COLLECTION` | Collection mode | |
+| `IA_GLOB` | File filter pattern | |
+| `IA_MAX_MBPS` | Bandwidth limit | |
+| `IA_LOG_LEVEL` | Logging level (INFO/DEBUG/ERROR) | |
+| `IA_ACCESS_KEY` | Archive.org access key | ✅ (if no config) |
+| `IA_SECRET_KEY` | Archive.org secret key | ✅ (if no config) |
+
+### File Selection with Glob Patterns
+
+By default, the tool downloads ALL files for an item. You can filter files with glob patterns:
+
+```bash
 IA_GLOB=*.zip            # Only ZIP archives
-IA_GLOB=*.{mp3,flac}     # Audio originals (brace expansion supported by IA CLI)
-IA_GLOB=*2024*           # Any file name containing 2024
-IA_GLOB=*/scans/*        # Files within a scans/ subdirectory
+IA_GLOB=*.{mp3,flac}     # Audio originals
+IA_GLOB=*2024*           # Files containing 2024
+IA_GLOB=*/scans/*        # Files in scans/ subdirectory
 ```
 
-Notes:
-- Leaving `IA_GLOB` unset (or using `-g '*'`) mirrors everything.
-- When combining with `--collection`, the same glob applies to each item discovered.
-- The project performs additional filename safety validation; unusual paths like `../secret` are ignored.
-- Exclusion patterns (`--exclude`) are not currently surfaced by this wrapper; if needed you can extend the invocation logic.
+> Leave `IA_GLOB` unset (or use `-g '*'`) to mirror everything.
 
-# Development
+## 📂 Files & Outputs
 
-## Build (local)
+- **Download destination**: `/data/<identifier>` (unless `--destdir` provided)
+- **Status file**: `/data/<identifier>/.ia_status/<identifier>.json`
+- **Snapshot report**: `/data/<identifier>/report.json`
+- **Log file**: `/data/<identifier>/ia_download.log` (also streamed to stdout)
 
-Build a single-arch image (defaults to `IA_PYPI_VERSION=5.5.0`):
+## 💻 Development
 
+### Build Local Image
 ```bash
-docker build -t themorgantown/ia-mirror:0.1.0 -f docker/Dockerfile docker
+# Single-arch build
+docker build -t themorgantown/ia-mirror:0.2.0 -f docker/Dockerfile docker
 docker build --pull --rm -f docker/Dockerfile -t ia-mirror:local docker
-```
 
-Multi-arch build (recommended for publishing):
-
-```bash
+# Multi-arch build (recommended for publishing)
 docker buildx create --use --name ia-builder || true
 docker buildx build --platform linux/amd64,linux/arm64 \
   --build-arg IA_PYPI_VERSION=5.5.0 \
-  -t themorgantown/ia-mirror:0.1.0 --push -f docker/Dockerfile docker
+  -t themorgantown/ia-mirror:0.2.0 --push -f docker/Dockerfile docker
 ```
 
-## Usage examples
+### Development Usage Examples
 
-Dry-run (no credentials needed for public items):
-
+**Dry-run (no credentials needed for public items)**:
 ```bash
 docker run --rm \
   -v "$PWD/mirror:/data" \
@@ -122,8 +165,7 @@ docker run --rm \
   themorgantown/ia-mirror:latest --dry-run
 ```
 
-Run with host `ia` config (quick):
-
+**With host `ia` config**:
 ```bash
 docker run --rm \
   -v "$HOME/.config/ia:/home/app/.config/ia:ro" \
@@ -134,8 +176,7 @@ docker run --rm \
   themorgantown/ia-mirror:latest
 ```
 
-Run using env creds (safer than mounting whole config):
-
+**With environment credentials**:
 ```bash
 docker run --rm \
   -v "$PWD/mirror:/data" \
@@ -145,27 +186,81 @@ docker run --rm \
   themorgantown/ia-mirror:latest
 ```
 
-Recommended for production: use Docker secrets or your orchestration's secret mechanism and inject into the container as env vars or bind a single secret file as `/run/secrets/ia.ini` then copy into `/home/app/.config/ia/ia.ini` at startup.
+> **Production recommendation**: Use Docker secrets or your orchestration's secret mechanism and inject into the container as env vars or bind a single secret file as `/run/secrets/ia.ini` then copy into `/home/app/.config/ia/ia.ini` at startup.
 
-## Config / ENV variables
-- IA_IDENTIFIER (required) — item or collection identifier
-- IA_DESTDIR — destination directory under /data (container resolves path)
-- IA_CONCURRENCY (-j) — parallel workers (default 5)
-- IA_CHECKSUM — enable checksums
-- IA_DRY_RUN — dry-run
-- IA_VERIFY_ONLY, IA_ESTIMATE_ONLY, IA_COLLECTION, IA_RESUMEFOLDERS
-- IA_MAX_MBPS, IA_ASSUMED_MBPS, IA_COST_PER_GB
-- IA_LOG_LEVEL — INFO/DEBUG/ERROR (controls stdout/file logging)
-- IA_ACCESS_KEY / IA_SECRET_KEY — short-lived env-based credentials
+### Versioning & Releases
 
- 
-## Files & outputs
-- Download destination: `/data/<identifier>` (unless `--destdir` provided)
-- Status dir: `/data/<identifier>/.ia_status/<identifier>.json`
-- Snapshot report: `/data/<identifier>/report.json`
-- Log file: `/data/<identifier>/ia_download.log` (also streamed to stdout)
+We use Semantic Versioning (MAJOR.MINOR.PATCH) for releases:
 
-Note on `--destdir` layout: the underlying `ia` CLI writes files under `<destdir>/<identifier>/...`. When you set `IA_DESTDIR=/data`, this wrapper resolves the working directory to `/data/<identifier>` for logs/status, and instructs `ia` to write to `/data` so files land in `/data/<identifier>/...` (no double-nesting). Using the examples above will produce the expected layout.
+1. **Tag the release** (note the v-prefix):
+   ```bash
+   git tag -a v0.2.0 -m "Release v0.2.0"
+   git push origin v0.2.0
+   ```
 
-## Troubleshooting
-- If the image cannot find `ia`, ensure the `internetarchive` package version installed in the image provides the `ia` CLI (we pin with `IA_PYPI_VERSION` build arg). You can also bind a local `ia` binary into `/app/ia`.
+2. **GitHub Actions** will automatically build multi-arch images and push to:
+   - Docker Hub: `themorgantown/ia-mirror:0.2.0` and `:latest`
+   - GHCR: `ghcr.io/<owner>/ia-mirror:v0.2.0` and `:latest`
+
+3. **Fixing mistakes**:
+   - If you tagged without the v-prefix, remove and retag:
+     ```bash
+     git push origin :refs/tags/0.2.0
+     git tag -d 0.2.0
+     git tag -a v0.2.0 -m "Release v0.2.0"
+     git push origin v0.2.0
+     ```
+
+## 🛡️ Security
+
+- **Never bake credentials into images**; use tokens/secrets instead
+- **Entry point writes `ia.ini` from env/secrets**; never echo secret contents
+- **Sensitive files (ia.ini) use restrictive permissions** (600)
+- **Use Docker secrets method for production** deployments
+- **Regularly rotate your Archive.org access keys**
+
+## 🤝 Contributing
+
+We welcome contributions! Here's how you can help:
+
+1. **Fork the repository**
+2. **Create a feature branch** (`git checkout -b feature/AmazingFeature`)
+3. **Commit your changes** (`git commit -m 'Add some AmazingFeature'`)
+4. **Push to the branch** (`git push origin feature/AmazingFeature`)
+5. **Open a Pull Request**
+
+### Development Guidelines
+
+- Follow the project's coding standards
+- Write clear commit messages
+- Add tests for new functionality
+- Ensure all tests pass before submitting a PR
+- Update documentation when changing functionality
+
+### Reporting Issues
+
+- Use the GitHub issue tracker to report bugs
+- Don't hammer the IA!
+- Include detailed steps to reproduce
+- Specify your environment (Docker version, OS, etc.)
+- Include relevant logs or error messages
+
+## 🔧 Troubleshooting
+
+- **If the image cannot find `ia`**: Ensure the `internetarchive` package version installed in the image provides the `ia` CLI (we pin with `IA_PYPI_VERSION` build arg). You can also bind a local `ia` binary into `/app/ia`.
+
+- **Permission errors**: The container runs as `app:1000`; ensure volume write access.
+
+- **Authentication issues**: 
+  - Verify your access/secret keys at [https://archive.org/account/s3.php](https://archive.org/account/s3.php)
+  - Check that `ia.ini` has restrictive permissions (600)
+
+- **Download failures**: 
+  - Try with `IA_DRY_RUN=true` to test without downloading
+  - Check the log file at `/data/<identifier>/ia_download.log`
+  - Verify the item identifier exists on archive.org
+
+- **Performance issues**: 
+  - Adjust `IA_CONCURRENCY` (default 5) for your network
+  - Use `IA_MAX_MBPS` to limit bandwidth usage
+  - Consider using `IA_GLOB` to download only needed files
