@@ -6,8 +6,6 @@ Minimal Dockerized MVP for mirroring/downloading items from the Internet Archive
 
 This repository provides a small container that wraps parallel downloads, resume, dry-run, checksum verification and a small summary `report.json` written alongside the downloaded data. Useful for large, resumed, or complex downloads where dockerization makes life easier.
 
-Note: This is a small change to test the Docker Hub README sync workflow.
-
 ## QuickStart:
 
 Pull the latest published image (recommended):
