@@ -1,0 +1,18 @@
+services:
+  ia-mirror:
+    build:
+      context: docker
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/data  # Mount host ./data to container /data for persistent storage
+    environment:
+      # Required: Set your Internet Archive identifier (item or collection)
+      - IA_IDENTIFIER=example_item  # Replace 'example_item' with your actual IA identifier
+      # Dry run by default: Shows what would be downloaded without actually fetching
+      - IA_DRY_RUN=1  # Set to 0 or remove this line to perform a real download
+      # Optional: Add other environment variables as needed (see docker/example.env for full list)
+      # - IA_GLOB=*  # Default: download all files; set to restrict (e.g., *.zip)
+      # - IA_CONCURRENCY=5  # Parallel downloads
+      # - IA_CHECKSUM=1  # Enable checksum verification
+    # The container will run with the above environment variables injected as CLI args
+    # For real downloads, edit IA_DRY_RUN above or override with: docker-compose run --rm ia-mirror env IA_DRY_RUN=0

@@ -1,6 +1,6 @@
 # Minimal MVP Dockerfile for IA mirror
-ARG IA_PYPI_VERSION="5.5.0"
-FROM python:3.13.7-slim AS base
+ARG IA_PYPI_VERSION="5.5.1"
+FROM python:3.13-slim AS base
 ARG IA_PYPI_VERSION
 
 ENV PYTHONUNBUFFERED=1 \
@@ -15,7 +15,8 @@ ENV PYTHONUNBUFFERED=1 \
 # Install required system packages (curl for diagnostics if needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl tini bash && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Add non-root user
 RUN useradd -u 1000 -m -d /home/app app

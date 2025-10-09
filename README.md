@@ -44,6 +44,20 @@ docker run --rm \
 
 No credentials needed for public-item dry runs (use --dry-run).  
 
+## Docker Compose (Recommended for Local Development)
+
+A `docker-compose.yml` is provided for easy local testing with sane defaults. It runs in dry-run mode by default to show what would be downloaded without actually fetching files.
+
+1. Edit `docker-compose.yml` and replace `example_item` with your actual IA identifier.
+2. Run: `docker-compose up`
+3. This will perform a dry-run download, showing estimates and what files would be fetched.
+
+To switch to a real download:
+- Edit `docker-compose.yml` and change `IA_DRY_RUN=1` to `IA_DRY_RUN=0` (or remove the line).
+- Or run: `docker-compose run --rm ia-mirror env IA_DRY_RUN=0`
+
+Add credentials if needed (see QuickStart above).
+
 ## Examples:
 
 docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" themorgantown/ia-mirror:latest
