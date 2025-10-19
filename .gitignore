@@ -6,3 +6,7 @@ privatehowto.md
 ia
 /mirror
 .venv/
+
+# Claude workspace (keep commands, ignore local settings)
+.claude/settings.json
+.claude/*.local.md

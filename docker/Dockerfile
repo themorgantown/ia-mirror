@@ -1,5 +1,5 @@
 # Minimal MVP Dockerfile for IA mirror
-ARG IA_PYPI_VERSION="5.5.1"
+ARG IA_PYPI_VERSION="5.7.0"
 FROM python:3.13-slim AS base
 ARG IA_PYPI_VERSION
 
