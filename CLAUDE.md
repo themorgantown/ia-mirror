@@ -20,8 +20,8 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
 
 ### Git & Release Commands
 - Check status: `git status`
-- Create release: `git tag -a v0.1.3 -m "Release v0.1.3" && git push origin v0.1.3`
-- Fix bad tag: `git push origin :refs/tags/0.1.3; git tag -d 0.1.3; git tag -a v0.1.3 -m "Release v0.1.3"; git push origin v0.1.3`
+- Create release: `git tag -a v0.2.3 -m "Release v0.2.3" && git push origin v0.2.3`
+- Fix bad tag: `git push origin :refs/tags/0.2.3; git tag -d 0.2.3; git tag -a v0.2.3 -m "Release v0.2.3"; git push origin v0.2.3`
 - View releases: `gh release list`
 
 ## Architecture
@@ -40,11 +40,11 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
 ## Versioning & Release Workflow
 
 ### Semantic Versioning
-- Use format: MAJOR.MINOR.PATCH (e.g., 0.1.3)
-- Git tags MUST have "v" prefix: v0.1.3
+- Use format: MAJOR.MINOR.PATCH (e.g., 0.2.3)
+- Git tags MUST have "v" prefix: v0.2.3
 - CI triggers ONLY on tags matching v*.*.*
-- Docker Hub strips "v" → themorgantown/ia-mirror:0.1.3
-- GHCR keeps "v" → ghcr.io/themorgantown/ia-mirror:v0.1.3
+- Docker Hub strips "v" → themorgantown/ia-mirror:0.2.3
+- GHCR keeps "v" → ghcr.io/themorgantown/ia-mirror:v0.2.3
 
 ### Release Process
 1. **Commit changes**:
@@ -59,8 +59,8 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
 
 2. **Tag release** (note v-prefix):
    ```bash
-   git tag -a v0.1.3 -m "Release v0.1.3"
-   git push origin v0.1.3
+   git tag -a v0.2.3 -m "Release v0.2.3"
+   git push origin v0.2.3
    ```
 
 3. **Automatic CI**: GitHub Actions builds multi-arch images and pushes to both registries
@@ -100,24 +100,24 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
   - GHCR: `GITHUB_TOKEN` with packages:write
   - Docker Hub: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` secrets
 - **Tag Behavior**:
-  - Push `v0.1.3` → triggers build
-  - GHCR: `v0.1.3` and `latest`
-  - Docker Hub: `0.1.3` (strips v) and `latest`
+  - Push `v0.2.3` → triggers build
+  - GHCR: `v0.2.3` and `latest`
+  - Docker Hub: `0.2.3` (strips v) and `latest`
 
 ### Fixing Release Issues
 - **Wrong tag format** (missing v):
   ```bash
-  git push origin :refs/tags/0.1.3
-  git tag -d 0.1.3
-  git tag -a v0.1.3 -m "Release v0.1.3"
-  git push origin v0.1.3
+  git push origin :refs/tags/0.2.3
+  git tag -d 0.2.3
+  git tag -a v0.2.3 -m "Release v0.2.3"
+  git push origin v0.2.3
   ```
 - **Redo version**:
   ```bash
-  git push origin :refs/tags/v0.1.3
-  git tag -d v0.1.3
-  git tag -a v0.1.3 -m "Release v0.1.3"
-  git push origin v0.1.3
+  git push origin :refs/tags/v0.2.3
+  git tag -d v0.2.3
+  git tag -a v0.2.3 -m "Release v0.2.3"
+  git push origin v0.2.3
   ```
 
 ## Files to inspect
