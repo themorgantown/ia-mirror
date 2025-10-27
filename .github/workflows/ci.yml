@@ -43,7 +43,7 @@ jobs:
           docker buildx build --load -f docker/Dockerfile -t ia-mirror:${{ github.sha }} docker
 
       - name: Create SBOM (syft)
-        uses: anchore/sbom-action@v0.20.6
+        uses: anchore/sbom-action@v0.20.9
         with:
           image: ia-mirror:${{ github.sha }}
 
