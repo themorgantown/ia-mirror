@@ -10,3 +10,4 @@ ia
 # Claude workspace (keep commands, ignore local settings)
 .claude/settings.json
 .claude/*.local.md
+data/example_item/ia_download.log
