@@ -13,6 +13,36 @@ All notable changes to this project will be documented in this file.
 ### Documentation
 - Update version examples to v0.2.3 in CLAUDE.md
 
+## [0.3.0] - 2025-10-28
+
+### Features
+- Add multi-glob include support (`-g/--glob` repeatable and comma-separated)
+- Add exclude filters (`-x/--exclude`) and extension filters (`-f/--format`)
+- Add lockfile safety (default on) stored under `.ia_status/lock.json` with PID/host/uuid; `--no-lock` and `IA_NO_LOCK` to disable
+- Emit structured `report.json` for `--dry-run` and `--estimate-only` with counts/sizes/ETA
+- Implement polite exponential backoff with jitter on HTTP 429/5xx; defaults enabled and tunable via `--backoff-*` and env vars
+
+### Behavior
+- Bandwidth caps remain opt-in only; no throttling unless `--max-mbps` (or `IA_MAX_MBPS`) is set
+- `resumefolders` continues to operate on `.zip` files and now honors excludes
+
+### Configuration
+- New envs: `IA_EXCLUDE`, `IA_FORMAT`, `IA_NO_LOCK`, `IA_NO_BACKOFF`, `IA_BACKOFF_BASE`, `IA_BACKOFF_MAX`, `IA_BACKOFF_MULTIPLIER`, `IA_BACKOFF_JITTER`
+
+### Documentation
+- README: document new flags/envs, lockfile location, and structured report behavior
+- example.env: add commented examples for filters, lock override, and clarify bandwidth cap is off by default
+
+## [0.3.1] - 2025-10-28
+
+### Features
+- Optional batch mode: `--use-batch-source` to process a two-column CSV (`source,destdir`) running multiple mirrors sequentially
+- Env support: `IA_USE_BATCH_SOURCE`, `IA_BATCH_SOURCE_PATH`
+
+### Documentation
+- README: add batch mode usage and CSV example
+- Add `batch_source.csv` example to repository root
+
 ## [0.2.2] - 2025-10-19
 
 ### Security

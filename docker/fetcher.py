@@ -5,7 +5,7 @@ Restored full feature set: parallel downloads, resume (status file), collection 
 dry-run, verify-only, estimation, resumefolders optimization, bandwidth cap (via trickle if present),
 cost/time estimation, graceful termination.
 """
-import argparse, json, logging, os, shutil, signal, subprocess, sys, threading, time, math
+import argparse, json, logging, os, shutil, signal, subprocess, sys, threading, time, math, fnmatch, socket, uuid, atexit, random, csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Tuple
@@ -108,9 +108,40 @@ def run_cmd(cmd: List[str]) -> subprocess.CompletedProcess:
     logging.debug("CMD %s", " ".join(cmd))
     return subprocess.run(cmd, capture_output=True, text=True)
 
-def get_file_list(ia: str, identifier: str, glob_pattern: str) -> List[str]:
+def _list_with_glob(ia: str, identifier: str, glob_pattern: str) -> List[str]:
     r = run_cmd([ia, "list", identifier, "--glob", glob_pattern])
     return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
+
+def get_file_list(ia: str, identifier: str, include_globs: List[str]|None=None,
+                  exclude_globs: List[str]|None=None,
+                  formats: List[str]|None=None) -> List[str]:
+    """Build file list using upstream globs and local filtering for exclude/format.
+    - include_globs: one or more glob patterns to include (default ['*'])
+    - exclude_globs: zero or more glob patterns to exclude
+    - formats: zero or more lowercase extensions (e.g., ['mp3','flac'])
+    """
+    include_globs = include_globs or ["*"]
+    acc: List[str] = []
+    seen = set()
+    for g in include_globs:
+        files = _list_with_glob(ia, identifier, g)
+        for f in files:
+            if f not in seen:
+                seen.add(f)
+                acc.append(f)
+    # Apply excludes
+    if exclude_globs:
+        kept = []
+        for f in acc:
+            if any(fnmatch.fnmatchcase(f, x) for x in exclude_globs):
+                continue
+            kept.append(f)
+        acc = kept
+    # Apply format filters (by extension)
+    if formats:
+        fmts = [s.lower().lstrip('.') for s in formats if s]
+        acc = [f for f in acc if f.lower().rsplit('.', 1)[-1] in fmts] if fmts else acc
+    return acc
 
 def get_collection_items(ia: str, collection_id: str) -> List[str]:
     r = run_cmd([ia, "search", f'collection:"{collection_id}"', "--itemlist"])
@@ -136,6 +167,49 @@ _eta_seconds = 0.0
 _speed_sample_interval = 30              # Seconds between speed sampling windows
 _speed_sampler_stop = threading.Event()
 _file_last_sizes = {}                   # Map of canonical local file path -> last observed size
+
+# ---------- Global polite backoff (HTTP 429/5xx) ----------
+_backoff_lock = threading.Lock()
+_backoff_enabled = True
+_backoff_level = 0
+_backoff_until_ts = 0.0
+_backoff_base = 2.0
+_backoff_max = 60.0
+_backoff_multiplier = 2.0
+_backoff_jitter = 0.25  # fraction of delay
+
+def _backoff_wait_if_needed():
+    if not _backoff_enabled:
+        return
+    while not _shutdown_event.is_set():
+        with _backoff_lock:
+            wait = max(_backoff_until_ts - time.time(), 0.0)
+        if wait <= 0:
+            return
+        sleep_for = min(wait, 1.0)
+        time.sleep(sleep_for)
+
+def _backoff_register_event(reason: str):
+    """Increase backoff after a likely rate-limit or server error."""
+    if not _backoff_enabled:
+        return
+    global _backoff_level, _backoff_until_ts
+    with _backoff_lock:
+        _backoff_level = max(0, _backoff_level) + 1
+        delay = min(_backoff_base * (_backoff_multiplier ** _backoff_level), _backoff_max)
+        jitter = (random.random() * 2 - 1) * (_backoff_jitter * delay)
+        delay = max(0.0, delay + jitter)
+        target = time.time() + delay
+        _backoff_until_ts = max(_backoff_until_ts, target)
+        logging.warning("Backoff triggered due to %s; sleeping up to %.1fs (level=%d)", reason, delay, _backoff_level)
+
+def _backoff_relax():
+    if not _backoff_enabled:
+        return
+    global _backoff_level
+    with _backoff_lock:
+        if _backoff_level > 0:
+            _backoff_level -= 1
 
 def _format_eta(seconds: float) -> str:
     if seconds <= 0 or seconds == float('inf'): return 'n/a'
@@ -248,6 +322,9 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
     # If destdir already ends with the identifier (non-collection mode), pass the parent
     # to ia so it will create exactly one <identifier>/ layer.
     ia_destdir = destdir.parent if destdir.name == str(identifier) else destdir
+    # Respect global polite backoff before starting a network-heavy call
+    _backoff_wait_if_needed()
+
     cmd = [ia, "download", identifier, filename, "--destdir", str(ia_destdir)]
     if checksum: cmd.append("--checksum")
     cmd += ["--retries", str(retries)]
@@ -300,6 +377,13 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
     )
     if not success:
         logging.error("Download failed for %s: %s %s", filename, stdout, stderr)
+        # Detect common throttling/server error signals and register backoff
+        s = (stdout or "") + "\n" + (stderr or "")
+        if any(x in s for x in [" 429 ", "Too Many Requests", "rate limit", "Rate limit", "Retry-After"]) or \
+           any(f" {code} " in s for code in ["500","502","503","504"]):
+            _backoff_register_event("throttle/server error")
+    else:
+        _backoff_relax()
     return filename, success
 
 # ---------- Signals ----------
@@ -335,13 +419,17 @@ def inject_env_args():
         "IA_VERIFY_ONLY": "--verify-only",
         "IA_ESTIMATE_ONLY": "--estimate-only",
         "IA_COLLECTION": "--collection",
+        "IA_NO_LOCK": "--no-lock",
+        "IA_NO_BACKOFF": "--no-backoff",
+        "IA_USE_BATCH_SOURCE": "--use-batch-source",
     }
 
     # value flags mapping: env -> (flag,)
     value_map = {
         "IA_CONCURRENCY": ("-j",),
         "IA_DESTDIR": ("--destdir",),
-        "IA_GLOB": ("-g",),
+        # IA_GLOB may be comma/space-separated; we expand to multiple -g
+        # handled specially below
         "IA_IA_PATH": ("--ia-path",),
         "IA_RETRIES": ("--retries",),
         "IA_PROGRESS_TIMEOUT": ("--progress-timeout",),
@@ -352,6 +440,14 @@ def inject_env_args():
         "IA_ASSUMED_MBPS": ("--assumed-mbps",),
         "IA_ASSUMED_Mbps": ("--assumed-mbps",),
         "IA_COST_PER_GB": ("--cost-per-gb",),
+        # New pass-throughs
+        "IA_EXCLUDE": ("--exclude",),
+        "IA_FORMAT": ("--format",),
+        "IA_BACKOFF_BASE": ("--backoff-base",),
+        "IA_BACKOFF_MAX": ("--backoff-max",),
+        "IA_BACKOFF_MULTIPLIER": ("--backoff-multiplier",),
+        "IA_BACKOFF_JITTER": ("--backoff-jitter",),
+        "IA_BATCH_SOURCE_PATH": ("--batch-source-path",),
     }
 
     for env, flag in bool_map.items():
@@ -359,10 +455,25 @@ def inject_env_args():
         if v and v.lower() not in ("0", "false", "no", "off"):
             argv.append(flag)
 
+    # Handle IA_GLOB specially for multiple values
+    v_glob = os.getenv("IA_GLOB")
+    if v_glob:
+        parts = [p for p in [s.strip() for s in v_glob.replace(" ", ",").split(",") ] if p]
+        for p in parts:
+            argv.extend(["-g", p])
+
     for env, tup in value_map.items():
+        if env in ("IA_GLOB",):
+            continue
         v = os.getenv(env)
         if v:
-            argv.extend([tup[0], v])
+            # Support comma-separated multi-values for exclude/format
+            if env in ("IA_EXCLUDE", "IA_FORMAT") and ("," in v or " " in v):
+                parts = [p for p in [s.strip() for s in v.replace(" ", ",").split(",") ] if p]
+                for p in parts:
+                    argv.extend([tup[0], p])
+            else:
+                argv.extend([tup[0], v])
 
     sys.argv = argv
 
@@ -377,7 +488,9 @@ def main():
     ap = argparse.ArgumentParser(description="Parallel IA downloader with resume + mirror")
     ap.add_argument("identifier", nargs='?', help="Item or collection ID (required unless --print-effective-config)")
     ap.add_argument("--destdir", help="Destination directory (default: ./<identifier>)")
-    ap.add_argument("-g","--glob", default="*", help="Glob pattern (default: all files)")
+    ap.add_argument("-g","--glob", action="append", default=["*"], help="Glob pattern; can be repeated or comma-separated (default: all files)")
+    ap.add_argument("-x","--exclude", action="append", default=[], help="Exclude glob; can be repeated or comma-separated")
+    ap.add_argument("-f","--format", dest="formats", action="append", default=[], help="Restrict to extensions (e.g., mp3,flac); can be repeated or comma-separated")
     ap.add_argument("-j","--concurrency", type=int, default=5, help="Parallel workers (default 5)")
     ap.add_argument("--retries", type=int, default=5, help="Retries per file")
     ap.add_argument("--progress-timeout", type=int, default=900, help="No-progress timeout (s)")
@@ -390,16 +503,89 @@ def main():
     ap.add_argument("--checksum", action="store_true", help="Enable checksum verification")
     ap.add_argument("--ia-path", help="Path to ia executable")
     ap.add_argument("--estimate-only", action="store_true", help="Only output size/time/cost estimates and exit")
-    ap.add_argument("--max-mbps", type=float, default=0.0, help="Throttle max bandwidth (Mbps, approx) using trickle if available")
+    ap.add_argument("--max-mbps", type=float, default=0.0, help="Throttle max bandwidth (Mbps, approx). Only active if set; tries 'trickle' if present.")
     ap.add_argument("--assumed-mbps", type=float, default=float(os.environ.get("IA_ASSUMED_MBPS", "100")), help="Assumed bandwidth for ETA if uncapped")
+    ap.add_argument("--no-lock", action="store_true", help="Do not create a lockfile in destdir (unsafe for concurrent runs)")
+    ap.add_argument("--no-backoff", action="store_true", help="Disable polite exponential backoff on 429/5xx errors")
+    ap.add_argument("--backoff-base", type=float, default=float(os.environ.get("IA_BACKOFF_BASE", "2")), help="Base backoff seconds (default 2)")
+    ap.add_argument("--backoff-max", type=float, default=float(os.environ.get("IA_BACKOFF_MAX", "60")), help="Max backoff seconds (default 60)")
+    ap.add_argument("--backoff-multiplier", type=float, default=float(os.environ.get("IA_BACKOFF_MULTIPLIER", "2")), help="Backoff multiplier (default 2)")
+    ap.add_argument("--backoff-jitter", type=float, default=float(os.environ.get("IA_BACKOFF_JITTER", "0.25")), help="Jitter fraction 0..1 (default 0.25)")
     ap.add_argument("--cost-per-gb", type=float, default=float(os.environ.get("IA_COST_PER_GB", "0")), help="Optional cost per GB (USD) for estimate")
     ap.add_argument("--dryrun-mbps", type=float, default=500.0, help="Simulation speed (Mbps) for --dry-run dynamic ETA (default 500 Mbps)")
     ap.add_argument("--speed-sample-interval", type=int, default=30, help="Interval in seconds for aggregate speed sampling (default 30)")
     ap.add_argument("--print-effective-config", action="store_true", help="Print derived configuration (env + args) and exit")
+    ap.add_argument("--use-batch-source", action="store_true", help="Read batch source CSV (two columns: source identifier, destination path)")
+    ap.add_argument("--batch-source-path", default=os.environ.get("IA_BATCH_SOURCE_PATH", "batch_source.csv"), help="Path to batch_source.csv (default ./batch_source.csv)")
     args = ap.parse_args()
 
-    if not args.identifier and not args.print_effective_config:
+    if not args.identifier and not args.print_effective_config and not args.use_batch_source:
         ap.error("identifier required unless --print-effective-config")
+
+    # Batch mode: spawn sub-invocations for each row to avoid shared global state
+    if args.use_batch_source and not args.print_effective_config:
+        csv_path = Path(args.batch_source_path)
+        if not csv_path.exists():
+            print(f"❌ Batch source file not found: {csv_path}", file=sys.stderr)
+            return 2
+        pairs = []
+        with csv_path.open(newline='') as fh:
+            reader = csv.reader(fh)
+            for row in reader:
+                if not row or len(row) < 2:
+                    continue
+                src = (row[0] or '').strip()
+                dst = (row[1] or '').strip()
+                if not src or src.lower() == 'source':  # skip header
+                    continue
+                pairs.append((src, dst))
+        if not pairs:
+            print("❌ Batch source CSV contains no valid rows.", file=sys.stderr)
+            return 2
+        print(f"📑 Batch mode: processing {len(pairs)} rows from {csv_path}")
+        # Build common flags from current args (excluding identifier/destdir)
+        def add_flag(flag, cond):
+            return [flag] if cond else []
+        common = []
+        for g in (args.glob or []):
+            common += ["-g", g]
+        for x in (args.exclude or []):
+            common += ["-x", x]
+        for f in (args.formats or []):
+            common += ["-f", f]
+        common += ["-j", str(args.concurrency), "--retries", str(args.retries),
+                   "--progress-timeout", str(args.progress_timeout), "--max-timeout", str(args.max_timeout)]
+        common += add_flag("--collection", args.collection)
+        common += add_flag("--resumefolders", args.resumefolders)
+        common += add_flag("--dry-run", args.dry_run)
+        common += add_flag("--verify-only", args.verify_only)
+        common += add_flag("--checksum", args.checksum)
+        common += add_flag("--estimate-only", args.estimate_only)
+        if args.max_mbps and args.max_mbps > 0:
+            common += ["--max-mbps", str(args.max_mbps)]
+        common += ["--assumed-mbps", str(args.assumed_mbps), "--cost-per-gb", str(args.cost_per_gb)]
+        common += add_flag("--no-lock", args.no_lock)
+        common += add_flag("--no-backoff", args.no_backoff)
+        common += ["--backoff-base", str(args.backoff_base), "--backoff-max", str(args.backoff_max),
+                   "--backoff-multiplier", str(args.backoff_multiplier), "--backoff-jitter", str(args.backoff_jitter),
+                   "--speed-sample-interval", str(args.speed_sample_interval)]
+        if args.ia_path:
+            common += ["--ia-path", args.ia_path]
+
+        failures = 0
+        seq = 0
+        for src, dst in pairs:
+            seq += 1
+            print(f"\n===== Batch {seq}/{len(pairs)}: {src} -> {dst} =====")
+            cmd = [sys.executable, str(Path(__file__).resolve()), src, "--destdir", dst] + common
+            res = subprocess.run(cmd)
+            if res.returncode != 0:
+                failures += 1
+        if failures:
+            print(f"❌ Batch completed with {failures} failures.", file=sys.stderr)
+            return 2
+        print("✅ Batch completed successfully.")
+        return 0
 
     # Resolve destination directory with sensible container defaults
     if args.destdir:
@@ -415,10 +601,58 @@ def main():
     init_logging(dest)
     ia = find_ia_executable(args.ia_path)
 
+    # Configure global backoff settings
+    global _backoff_enabled, _backoff_base, _backoff_max, _backoff_multiplier, _backoff_jitter
+    _backoff_enabled = not args.no_backoff
+    _backoff_base = max(0.0, args.backoff_base)
+    _backoff_max = max(_backoff_base, args.backoff_max)
+    _backoff_multiplier = max(1.0, args.backoff_multiplier)
+    _backoff_jitter = min(max(0.0, args.backoff_jitter), 1.0)
+
+    # Acquire a simple lock to avoid concurrent runs on the same dest (sane default)
+    lock_info = None
+    lock_path = status_dir_for(dest) / "lock.json"
+    if not args.no_lock:
+        if lock_path.exists():
+            try:
+                existing = json.loads(lock_path.read_text())
+            except Exception:
+                existing = None
+            logging.error("Another run appears to be active. Lock file exists at %s (%s)", lock_path, existing)
+            logging.error("If you are sure no other job is running, remove the lock file or pass --no-lock to override (not recommended).")
+            return 3
+        try:
+            lock_info = {
+                "pid": os.getpid(),
+                "host": socket.gethostname(),
+                "started": time.time(),
+                "identifier": args.identifier,
+                "uuid": str(uuid.uuid4()),
+            }
+            lock_path.write_text(json.dumps(lock_info, indent=2))
+        except Exception as e:
+            logging.warning("Failed to create lock file: %s", e)
+
+        def _unlock():
+            try:
+                # Only remove if content matches our uuid (avoid deleting foreign lock)
+                if lock_path.exists():
+                    try:
+                        cur = json.loads(lock_path.read_text())
+                        if isinstance(cur, dict) and cur.get("uuid") == lock_info.get("uuid"):
+                            lock_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        atexit.register(_unlock)
+
     cfg = {
         "identifier": args.identifier,
         "destdir": str(dest),
         "glob": args.glob,
+        "exclude": args.exclude,
+        "formats": args.formats,
         "concurrency": args.concurrency,
         "retries": args.retries,
         "progress_timeout": args.progress_timeout,
@@ -432,6 +666,14 @@ def main():
         "max_mbps": args.max_mbps,
         "assumed_mbps": args.assumed_mbps,
         "cost_per_gb": args.cost_per_gb,
+        "backoff": {
+            "enabled": _backoff_enabled,
+            "base": _backoff_base,
+            "max": _backoff_max,
+            "multiplier": _backoff_multiplier,
+            "jitter": _backoff_jitter,
+        },
+        "lock_enabled": (not args.no_lock),
         "env_injected": (len(sys.argv) > 1 and sys.argv[1] == (os.getenv("IA_IDENTIFIER") or os.getenv("IA_ITEM_NAME"))),
         "fallback_to_item": False
     }
@@ -488,7 +730,8 @@ def main():
         will_skip = []
         will_download = []
         for item in items:
-            files = get_file_list(ia, item, zip_glob)
+            # In resumefolders mode we only consider zip files; ignore format filters
+            files = get_file_list(ia, item, [zip_glob], args.exclude, None)
             for fn in files:
                 stem = Path(fn).stem
                 folder_path = dest / stem
@@ -506,7 +749,27 @@ def main():
             for _,fn in will_download: print(f"  DOWNLOAD: {fn}")
             return 0
     else:
-        job_list = [(item,f) for item in items for f in get_file_list(ia, item, args.glob)]
+        # Normalize multi-value args
+        include_globs = []
+        for g in (args.glob or ["*"]):
+            if g and ("," in g):
+                include_globs.extend([s.strip() for s in g.split(",") if s.strip()])
+            elif g:
+                include_globs.append(g)
+        exclude_globs = []
+        for x in (args.exclude or []):
+            if x and ("," in x):
+                exclude_globs.extend([s.strip() for s in x.split(",") if s.strip()])
+            elif x:
+                exclude_globs.append(x)
+        formats = []
+        for f in (args.formats or []):
+            if f and ("," in f):
+                formats.extend([s.strip() for s in f.split(",") if s.strip()])
+            elif f:
+                formats.append(f)
+
+        job_list = [(item,f) for item in items for f in get_file_list(ia, item, include_globs, exclude_globs, formats)]
 
     logging.info("Found %d items to process: %s", len(items), items)
     logging.info("Built job list with %d files", len(job_list))
@@ -589,7 +852,7 @@ def main():
         print(f" Estimated egress cost (@${args.cost_per_gb:.2f}/GB): ${cost_est:.2f}")
     if args.estimate_only:
         print(" Exiting due to --estimate-only")
-        write_report(dest/REPORT_FILENAME, {"schema_version":1,"status":"estimate-only","config":cfg})
+        write_report(dest/REPORT_FILENAME, {"schema_version":1,"status":"estimate-only","files_total": total_jobs, "known_size_bytes": total_remote_bytes, "remaining_known_bytes": remaining_bytes, "estimated_seconds": est_seconds, "config":cfg})
         return 0
     # If dry-run we simulate dynamic ETA using provided dryrun speed.
     if args.dry_run:
@@ -599,6 +862,16 @@ def main():
         sim_eta = _format_eta(sim_seconds)
         print(f"\n🧪 Dry-run simulation assuming {sim_speed_mbps:.1f} Mbps: ETA {sim_eta}")
         print("(Use --dryrun-mbps to adjust simulation speed.)")
+        write_report(dest/REPORT_FILENAME, {
+            "schema_version": 1,
+            "status": "dry-run",
+            "files_total": total_jobs,
+            "known_size_bytes": total_remote_bytes,
+            "remaining_known_bytes": remaining_bytes,
+            "simulated_mbps": sim_speed_mbps,
+            "simulated_seconds": sim_seconds,
+            "config": cfg,
+        })
         return 0
     if args.verify_only:
         ok=0

@@ -5,6 +5,8 @@
 Minimal Dockerized MVP for mirroring/downloading items from the Internet Archive using the `ia` CLI (via the `internetarchive` Python package).
 
 This repository provides a small container that wraps parallel downloads, resume, dry-run, checksum verification and a small summary `report.json` written alongside the downloaded data. Useful for large, resumed, or complex downloads where dockerization makes life easier.
+New: multi-glob includes, exclude filters, optional format restriction, lockfile safety (default-on), and structured reports for `--dry-run` and `--estimate-only`.
+Optional: batch mode via a simple `batch_source.csv` to run multiple mirrors in one go.
 
 ## QuickStart:
 
@@ -132,27 +134,66 @@ docker run --rm \
   themorgantown/ia-mirror:latest
 ```
 
+  ### Batch mode (optional)
+
+  Create a CSV with two columns: `source` (IA identifier) and `destdir` (target path inside container):
+
+  `batch_source.csv`
+
+  ```
+  source,destdir
+  The_Babe_Ruth_Collection,/data/The_Babe_Ruth_Collection
+  jillem-full-archive,/data/jillem-full-archive
+  ```
+
+  Run the container with batch mode enabled (mount the CSV and set dest roots as needed):
+
+  ```bash
+  docker run --rm \
+    -v "$PWD/mirror:/data" \
+    -v "$PWD/batch_source.csv:/app/batch_source.csv:ro" \
+    -e IA_ACCESS_KEY=AKXXX -e IA_SECRET_KEY=SKYYY \
+    themorgantown/ia-mirror:latest --use-batch-source --batch-source-path /app/batch_source.csv
+  ```
+  All other flags (e.g., `-g`, `-x`, `-f`, `-j`, `--checksum`) apply to every row in the CSV.
+
 Recommended for production: use Docker secrets or your orchestration's secret mechanism and inject into the container as env vars or bind a single secret file as `/run/secrets/ia.ini` then copy into `/home/app/.config/ia/ia.ini` at startup.
 
 ## Config / ENV variables
 - IA_IDENTIFIER (required) — item or collection identifier
 - IA_DESTDIR — destination directory under /data (container resolves path)
+- IA_GLOB (-g) — include glob; can be repeated or comma-separated (default `*`)
+- IA_EXCLUDE (-x) — exclude glob(s); can be repeated or comma-separated
+- IA_FORMAT (-f) — restrict to extensions (e.g., `mp3,flac`)
 - IA_CONCURRENCY (-j) — parallel workers (default 5)
 - IA_CHECKSUM — enable checksums
 - IA_DRY_RUN — dry-run
 - IA_VERIFY_ONLY, IA_ESTIMATE_ONLY, IA_COLLECTION, IA_RESUMEFOLDERS
-- IA_MAX_MBPS, IA_ASSUMED_MBPS, IA_COST_PER_GB
+- IA_MAX_MBPS (optional) — bandwidth cap in Mbps; default off. Only applies if set (>0). If `trickle` is available in PATH it will be used; otherwise the cap is ignored with a warning.
+- IA_ASSUMED_MBPS — used for ETA/estimate math when uncapped (default 100)
+- IA_COST_PER_GB — include egress cost estimate
+- Polite backoff (enabled by default):
+  - IA_NO_BACKOFF — set truthy to disable exponential backoff
+  - IA_BACKOFF_BASE, IA_BACKOFF_MAX, IA_BACKOFF_MULTIPLIER, IA_BACKOFF_JITTER — tune backoff (defaults: 2s, 60s, 2.0, 0.25)
 - IA_LOG_LEVEL — INFO/DEBUG/ERROR (controls stdout/file logging)
+- IA_NO_LOCK — set truthy to disable lockfile (not recommended)
+- IA_USE_BATCH_SOURCE — truthy to enable batch mode
+- IA_BATCH_SOURCE_PATH — path to batch CSV (default `./batch_source.csv`)
 - IA_ACCESS_KEY / IA_SECRET_KEY — short-lived env-based credentials
 
  
 ## Files & outputs
 - Download destination: `/data/<identifier>` (unless `--destdir` provided)
 - Status dir: `/data/<identifier>/.ia_status/<identifier>.json`
+- Lockfile: `/data/<identifier>/.ia_status/lock.json` (auto-removed on exit)
 - Snapshot report: `/data/<identifier>/report.json`
 - Log file: `/data/<identifier>/ia_download.log` (also streamed to stdout)
 
 Note on `--destdir` layout: the underlying `ia` CLI writes files under `<destdir>/<identifier>/...`. When you set `IA_DESTDIR=/data`, this wrapper resolves the working directory to `/data/<identifier>` for logs/status, and instructs `ia` to write to `/data` so files land in `/data/<identifier>/...` (no double-nesting). Using the examples above will produce the expected layout.
+
+Report behavior:
+- `--dry-run` now writes a structured `report.json` summarizing totals and simulated ETA.
+- `--estimate-only` writes a structured `report.json` with known/remaining bytes and estimated seconds, then exits without downloading.
 
 ## Troubleshooting
 - If the image cannot find `ia`, ensure the `internetarchive` package version installed in the image provides the `ia` CLI (we pin with `IA_PYPI_VERSION` build arg). You can also bind a local `ia` binary into `/app/ia`.
