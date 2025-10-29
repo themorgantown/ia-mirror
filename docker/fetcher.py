@@ -484,10 +484,12 @@ def write_report(report_path: Path, data: dict):
         print(f"WARNING: Failed to write {report_path.name}: {e}", file=sys.stderr)
 
 def main():
+
     inject_env_args()
     ap = argparse.ArgumentParser(description="Parallel IA downloader with resume + mirror")
     ap.add_argument("identifier", nargs='?', help="Item or collection ID (required unless --print-effective-config)")
     ap.add_argument("--destdir", help="Destination directory (default: ./<identifier>)")
+    # ...existing code...
     ap.add_argument("-g","--glob", action="append", default=[], help="Glob pattern; can be repeated or comma-separated (default: all files)")
     ap.add_argument("-x","--exclude", action="append", default=[], help="Exclude glob; can be repeated or comma-separated")
     ap.add_argument("-f","--format", dest="formats", action="append", default=[], help="Restrict to extensions (e.g., mp3,flac); can be repeated or comma-separated")
@@ -518,6 +520,16 @@ def main():
     ap.add_argument("--use-batch-source", action="store_true", help="Read batch source CSV (two columns: source identifier, destination path)")
     ap.add_argument("--batch-source-path", default=os.environ.get("IA_BATCH_SOURCE_PATH", "batch_source.csv"), help="Path to batch_source.csv (default ./batch_source.csv)")
     args = ap.parse_args()
+
+    # Fix: If --print-effective-config is set, fill identifier/destdir from env if missing
+    if args.print_effective_config:
+        if not args.identifier:
+            args.identifier = os.getenv("IA_IDENTIFIER") or os.getenv("IA_ITEM_NAME") or None
+        if not args.destdir:
+            if args.identifier:
+                args.destdir = f"/data/{args.identifier}"
+            else:
+                args.destdir = "/data/None"
 
     if not args.identifier and not args.print_effective_config and not args.use_batch_source:
         ap.error("identifier required unless --print-effective-config")

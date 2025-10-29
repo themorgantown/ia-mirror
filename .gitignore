@@ -11,3 +11,6 @@ ia
 .claude/settings.json
 .claude/*.local.md
 data/example_item/ia_download.log
+test_output/goodytwoshoes00newy/ia_download.log
+test_output/test1.log
+/test_output
