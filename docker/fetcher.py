@@ -488,7 +488,7 @@ def main():
     ap = argparse.ArgumentParser(description="Parallel IA downloader with resume + mirror")
     ap.add_argument("identifier", nargs='?', help="Item or collection ID (required unless --print-effective-config)")
     ap.add_argument("--destdir", help="Destination directory (default: ./<identifier>)")
-    ap.add_argument("-g","--glob", action="append", default=["*"], help="Glob pattern; can be repeated or comma-separated (default: all files)")
+    ap.add_argument("-g","--glob", action="append", default=[], help="Glob pattern; can be repeated or comma-separated (default: all files)")
     ap.add_argument("-x","--exclude", action="append", default=[], help="Exclude glob; can be repeated or comma-separated")
     ap.add_argument("-f","--format", dest="formats", action="append", default=[], help="Restrict to extensions (e.g., mp3,flac); can be repeated or comma-separated")
     ap.add_argument("-j","--concurrency", type=int, default=5, help="Parallel workers (default 5)")
@@ -751,11 +751,13 @@ def main():
     else:
         # Normalize multi-value args
         include_globs = []
-        for g in (args.glob or ["*"]):
+        for g in (args.glob or []):
             if g and ("," in g):
                 include_globs.extend([s.strip() for s in g.split(",") if s.strip()])
             elif g:
                 include_globs.append(g)
+        if not include_globs:
+            include_globs = ["*"]  # Default if none specified
         exclude_globs = []
         for x in (args.exclude or []):
             if x and ("," in x):
@@ -776,8 +778,9 @@ def main():
     if len(job_list) == 0 and len(items) > 0:
         # Debug: check what get_file_list returns
         for item in items:
-            files = get_file_list(ia, item, args.glob)
-            logging.warning("get_file_list('%s', '%s', '%s') returned %d files: %s", ia, item, args.glob, len(files), files[:5] if files else [])
+            test_globs = ["*"] if not args.glob else args.glob
+            files = get_file_list(ia, item, test_globs, [], [])
+            logging.warning("get_file_list('%s', '%s', %s) returned %d files: %s", ia, item, test_globs, len(files), files[:5] if files else [])
 
     total_jobs = len(job_list)
     if not total_jobs:
