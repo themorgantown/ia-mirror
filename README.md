@@ -4,9 +4,7 @@
 
 Minimal Dockerized MVP for mirroring/downloading items from the Internet Archive using the `ia` CLI (via the `internetarchive` Python package).
 
-This repository provides a small container that wraps parallel downloads, resume, dry-run, checksum verification and a small summary `report.json` written alongside the downloaded data. Useful for large, resumed, or complex downloads where dockerization makes life easier.
-New: multi-glob includes, exclude filters, optional format restriction, lockfile safety (default-on), and structured reports for `--dry-run` and `--estimate-only`.
-Optional: batch mode via a simple `batch_source.csv` to run multiple mirrors in one go.
+This repository is great for large-scale, resumed, or complex downloads. It wraps the official Internet Archive Python library with advanced features like parallel downloads, bandwidth throttling, metadata caching, and a real-time health check server. It supports all major features of the official API plus powerful extras: multi-glob includes, exclude filters, smart resuming without redownloading metadata, format restrictions, lockfile safety, and structured JSON reports for dry-runs and estimates. Bonus: use `batch_source.csv` to run multiple mirrors in one go.
 
 ## QuickStart:
 
@@ -15,6 +13,10 @@ Pull the latest published image (recommended):
 ```bash
 docker pull themorgantown/ia-mirror:latest
 ```
+
+Locate the IA identifier you want to mirror (e.g., `The_Babe_Ruth_Collection`).
+Run the container, mounting a local directory for downloads and specifying the identifier:
+(First, get your IA credentials as described below.)
 
 ```
 docker run --rm \
@@ -74,20 +76,21 @@ docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collectio
 docker run --rm -v $(pwd)/mirror:/data themorgantown/ia-mirror:latest The_Babe_Ruth_Collection --destdir /data --verify-only
 
 ## Quick concepts
-- Downloads are stored in the container-mounted `/data` volume (by default). Status and snapshots are stored in `DEST/.ia_status` and `DEST/report.json`.
-- Authentication can be provided via:
-  - mounting your host `~/.config/ia` into the container (read-only) — quick but exposes host config
-  - environment variables `IA_ACCESS_KEY` and `IA_SECRET_KEY` (the entrypoint will generate `~/.config/ia/ia.ini` at runtime)
-  - Docker secrets (recommended) — mount or inject into env in CI
+- **Native Python API**: This utility uses the `internetarchive` Python library directly for downloads, providing better control over parallelism and error handling than the standard CLI.
+- **State Management**: It maintains a `.ia_status/` directory within the destination folder. This contains JSON files tracking `pending` and `done` files, allowing the tool to resume interrupted downloads perfectly.
+- **Metadata Caching**: To reduce API pressure on IA, the tool fetches item metadata once and stores it locally as a "manifest" in `.ia_status/metadata.json`. This manifest is used for all subsequent logic (filtering, estimation, and verification).
+- **Native Throttling**: Bandwidth capping uses a native Python implementation (Token Bucket algorithm), ensuring portability across all architectures (amd64/arm64) without external dependencies like `trickle`.
+- **Health Monitoring**: A minimal web server (default port 8080) exposes the current `report.json` in real-time, allowing for easy integration with monitoring tools.
+- **Advanced Sync**: When enabled via `IA_SYNC`, the tool performs a true mirror by deleting local files that are no longer present in the remote IA item.
 
 # Development
 
 ## Build (local)
 
-Build a single-arch image (defaults to `IA_PYPI_VERSION=5.5.0`):
+Build a single-arch image (defaults to `IA_PYPI_VERSION=5.7.1`):
 
 ```bash
-docker build -t themorgantown/ia-mirror:0.1.0 -f docker/Dockerfile docker
+docker build -t themorgantown/ia-mirror:0.4.0 -f docker/Dockerfile docker
 docker build --pull --rm -f docker/Dockerfile -t ia-mirror:local docker
 ```
 
@@ -96,8 +99,8 @@ Multi-arch build (recommended for publishing):
 ```bash
 docker buildx create --use --name ia-builder || true
 docker buildx build --platform linux/amd64,linux/arm64 \
-  --build-arg IA_PYPI_VERSION=5.5.0 \
-  -t themorgantown/ia-mirror:0.1.0 --push -f docker/Dockerfile docker
+  --build-arg IA_PYPI_VERSION=5.7.1 \
+  -t themorgantown/ia-mirror:0.4.0 --push -f docker/Dockerfile docker
 ```
 
 ## Usage examples
@@ -134,16 +137,16 @@ docker run --rm \
   themorgantown/ia-mirror:latest
 ```
 
-  ### Batch mode (optional)
+  ### Batch mode (multiple items from CSV)
 
   Create a CSV with two columns: `source` (IA identifier) and `destdir` (target path inside container):
 
   `batch_source.csv`
-
+Note only source and destdir are required; other columns are optional:
   ```
-  source,destdir
-  The_Babe_Ruth_Collection,/data/The_Babe_Ruth_Collection
-  jillem-full-archive,/data/jillem-full-archive
+  source,destdir,glob,exclude,format,concurrency,verify_mode
+  The_Babe_Ruth_Collection,/data/The_Babe_Ruth_Collection,*.mp3,,mp3,10,checksum
+  jillem-full-archive,/data/jillem-full-archive,,*_thumb.jpg,,5,size
   ```
 
   Run the container with batch mode enabled (mount the CSV and set dest roots as needed):
@@ -166,12 +169,24 @@ Recommended for production: use Docker secrets or your orchestration's secret me
 - IA_EXCLUDE (-x) — exclude glob(s); can be repeated or comma-separated
 - IA_FORMAT (-f) — restrict to extensions (e.g., `mp3,flac`)
 - IA_CONCURRENCY (-j) — parallel workers (default 5)
-- IA_CHECKSUM — enable checksums
+- IA_CHECKSUM — enable checksums (alias for `IA_VERIFY_MODE=checksum`)
+- IA_VERIFY_MODE — verification level: `exists`, `size` (default), or `checksum`
 - IA_DRY_RUN — dry-run
-- IA_VERIFY_ONLY, IA_ESTIMATE_ONLY, IA_COLLECTION, IA_RESUMEFOLDERS
-- IA_MAX_MBPS (optional) — bandwidth cap in Mbps; default off. Only applies if set (>0). If `trickle` is available in PATH it will be used; otherwise the cap is ignored with a warning.
+- IA_VERIFY_ONLY — only verify existing files
+- IA_ESTIMATE_ONLY — only output size/time/cost estimates and exit
+- IA_COLLECTION — treat identifier as collection
+- IA_RESUMEFOLDERS — only consider .zip files and skip any zip whose folder already exists
+- IA_SYNC — if truthy, enables sync mode (deletes local files not present in IA)
+- IA_MAX_MBPS (optional) — bandwidth cap in Mbps; default off. Only applies if set (>0). Uses native Python throttling.
+- IA_HEALTH_PORT — port for the internal health check server (default 8080; set to 0 to disable)
 - IA_ASSUMED_MBPS — used for ETA/estimate math when uncapped (default 100)
 - IA_COST_PER_GB — include egress cost estimate
+- IA_SOURCE — filter by source type: `original`, `derivative`, or `metadata`
+- IA_ON_THE_FLY — enable dynamic zip generation
+- IA_XML_NAMES — use filenames from metadata XML
+- IA_IGNORE_EXISTING — skip files if they exist without size/checksum check
+- IA_NO_DIRECTORIES — flatten download into a single directory
+- IA_FORCE_METADATA_UPDATE — force refresh of local metadata manifest
 - Polite backoff (enabled by default):
   - IA_NO_BACKOFF — set truthy to disable exponential backoff
   - IA_BACKOFF_BASE, IA_BACKOFF_MAX, IA_BACKOFF_MULTIPLIER, IA_BACKOFF_JITTER — tune backoff (defaults: 2s, 60s, 2.0, 0.25)

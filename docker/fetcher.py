@@ -2,10 +2,11 @@
 """
 Advanced Internet Archive downloader / mirroring utility
 Restored full feature set: parallel downloads, resume (status file), collection mode, checksum verification,
-dry-run, verify-only, estimation, resumefolders optimization, bandwidth cap (via trickle if present),
+dry-run, verify-only, estimation, resumefolders optimization, native bandwidth cap,
 cost/time estimation, graceful termination.
 """
-import argparse, json, logging, os, shutil, signal, subprocess, sys, threading, time, math, fnmatch, socket, uuid, atexit, random, csv
+import argparse, json, logging, os, shutil, signal, subprocess, sys, threading, time, math, fnmatch, socket, uuid, atexit, random, csv, hashlib, http.server
+import internetarchive
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Tuple
@@ -14,6 +15,120 @@ REPORT_FILENAME = "report.json"
 
 _running_processes = []
 _shutdown_event = threading.Event()
+
+# ---------- Health Check Server ----------
+class HealthCheckServer:
+    def __init__(self, port: int):
+        self.port = port
+        self.report_path = None
+        self.server = None
+        self.thread = None
+
+    def set_report_path(self, path: Path):
+        self.report_path = path
+
+    def start(self):
+        outer = self
+        class HealthHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path in ("/", "/health"):
+                    if outer.report_path and outer.report_path.exists():
+                        try:
+                            data = outer.report_path.read_bytes()
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(data)))
+                            self.end_headers()
+                            self.wfile.write(data)
+                            return
+                        except Exception as e:
+                            logging.error("Error reading report for health check: %s", e)
+                    
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"status": "error", "message": "Report not found"}).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, format, *args):
+                pass # Quiet
+
+        try:
+            self.server = http.server.HTTPServer(("", self.port), HealthHandler)
+            self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+            self.thread.start()
+            logging.info("Health check server started on port %d", self.port)
+        except Exception as e:
+            logging.warning("Could not start health check server on port %d: %s", self.port, e)
+
+    def stop(self):
+        if self.server:
+            self.server.shutdown()
+            self.server.server_close()
+            logging.info("Health check server stopped")
+
+# ---------- Bandwidth Limiting (Token Bucket) ----------
+class TokenBucket:
+    """A simple Token Bucket algorithm for bandwidth limiting."""
+    def __init__(self, rate_bytes_per_sec: float):
+        self.rate = float(rate_bytes_per_sec)
+        self.capacity = self.rate  # 1 second burst capacity
+        self.tokens = self.capacity
+        self.last_time = time.time()
+        self.lock = threading.Lock()
+
+    def consume(self, tokens: int):
+        if self.rate <= 0:
+            return
+        
+        wait_time = 0
+        with self.lock:
+            now = time.time()
+            delta = now - self.last_time
+            # Refill tokens based on elapsed time
+            self.tokens = min(self.capacity, self.tokens + delta * self.rate)
+            self.last_time = now
+            
+            if self.tokens >= tokens:
+                self.tokens -= tokens
+            else:
+                # Calculate wait time for needed tokens
+                wait_time = (tokens - self.tokens) / self.rate
+                self.tokens = 0
+                # Advance last_time to account for the wait we're about to do
+                self.last_time = now + wait_time
+        
+        if wait_time > 0:
+            time.sleep(wait_time)
+
+class ThrottledFile:
+    """A file-like wrapper that throttles writes using a TokenBucket."""
+    def __init__(self, fileobj, bucket: TokenBucket | None):
+        self.fileobj = fileobj
+        self.bucket = bucket
+
+    def write(self, data):
+        if _shutdown_event.is_set():
+            raise InterruptedError("Shutdown requested")
+        if self.bucket:
+            self.bucket.consume(len(data))
+        return self.fileobj.write(data)
+
+    def flush(self):
+        if hasattr(self.fileobj, 'flush'):
+            return self.fileobj.flush()
+
+    def close(self):
+        if hasattr(self.fileobj, 'close'):
+            return self.fileobj.close()
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
 # ---------- Helpers for status persistence (store under destdir/.ia_status) ----------
 def status_dir_for(dest: Path) -> Path:
@@ -59,6 +174,68 @@ def save_status(identifier: str, dest: Path, data: dict) -> None:
         write_snapshot_report(dest, identifier, data)
     except Exception:
         pass
+
+def calculate_checksum(path: Path, algo: str = "md5") -> str:
+    """Calculate hex digest of a file."""
+    hash_func = hashlib.md5() if algo == "md5" else hashlib.sha1()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                hash_func.update(chunk)
+        return hash_func.hexdigest()
+    except Exception:
+        return ""
+
+def get_manifest(identifier: str, dest: Path, force_update: bool = False) -> dict:
+    """Fetch and cache item metadata. Returns a dict mapping filename -> metadata dict."""
+    sd = status_dir_for(dest)
+    # We use a per-identifier manifest to support collections correctly
+    manifest_path = sd / f"metadata_{identifier}.json"
+    
+    refresh = force_update
+    if not manifest_path.exists():
+        refresh = True
+    else:
+        mtime = manifest_path.stat().st_mtime
+        if (time.time() - mtime) > (30 * 24 * 60 * 60):
+            refresh = True
+            logging.info("Manifest for %s is older than 30 days, refreshing...", identifier)
+
+    if refresh:
+        logging.info("%s metadata for %s...", "Forcing refresh of" if force_update else "Fetching", identifier)
+        try:
+            item = internetarchive.get_item(identifier)
+            # Use item_metadata['files'] which is a list of dicts
+            manifest = {}
+            for f in item.item_metadata.get('files', []):
+                if 'name' in f:
+                    manifest[f['name']] = f
+            
+            tmp = manifest_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(manifest, indent=2))
+            tmp.replace(manifest_path)
+            
+            # Also maintain a generic metadata.json for the primary identifier if requested
+            primary_manifest = sd / "metadata.json"
+            try:
+                shutil.copy2(manifest_path, primary_manifest)
+            except Exception:
+                pass
+        except Exception as e:
+            if manifest_path.exists():
+                logging.warning("Failed to fetch metadata for %s; using cached version. Error: %s", identifier, e)
+                manifest = json.loads(manifest_path.read_text())
+            else:
+                logging.error("Failed to fetch metadata for %s and no cache exists: %s", identifier, e)
+                raise
+    else:
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except Exception as e:
+            logging.warning("Cached manifest for %s is corrupt, re-fetching... (%s)", identifier, e)
+            return get_manifest(identifier, dest, force_update=True)
+            
+    return manifest
 
 # ---------- Logging ----------
 def init_logging(dest: Path) -> None:
@@ -108,50 +285,73 @@ def run_cmd(cmd: List[str]) -> subprocess.CompletedProcess:
     logging.debug("CMD %s", " ".join(cmd))
     return subprocess.run(cmd, capture_output=True, text=True)
 
-def _list_with_glob(ia: str, identifier: str, glob_pattern: str) -> List[str]:
-    r = run_cmd([ia, "list", identifier, "--glob", glob_pattern])
-    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
-
-def get_file_list(ia: str, identifier: str, include_globs: List[str]|None=None,
+def get_file_list(manifest: dict, include_globs: List[str]|None=None,
                   exclude_globs: List[str]|None=None,
                   formats: List[str]|None=None) -> List[str]:
-    """Build file list using upstream globs and local filtering for exclude/format.
+    """Build file list using local manifest and glob/format filtering.
     - include_globs: one or more glob patterns to include (default ['*'])
     - exclude_globs: zero or more glob patterns to exclude
     - formats: zero or more lowercase extensions (e.g., ['mp3','flac'])
     """
     include_globs = include_globs or ["*"]
+    all_files = list(manifest.keys())
     acc: List[str] = []
-    seen = set()
     for g in include_globs:
-        files = _list_with_glob(ia, identifier, g)
-        for f in files:
-            if f not in seen:
-                seen.add(f)
-                acc.append(f)
+        acc.extend(fnmatch.filter(all_files, g))
+    
+    # Deduplicate while preserving order
+    seen = set()
+    acc = [x for x in acc if not (x in seen or seen.add(x))]
+
     # Apply excludes
     if exclude_globs:
-        kept = []
-        for f in acc:
-            if any(fnmatch.fnmatchcase(f, x) for x in exclude_globs):
-                continue
-            kept.append(f)
-        acc = kept
+        acc = [f for f in acc if not any(fnmatch.fnmatchcase(f, x) for x in exclude_globs)]
+    
     # Apply format filters (by extension)
     if formats:
         fmts = [s.lower().lstrip('.') for s in formats if s]
-        acc = [f for f in acc if f.lower().rsplit('.', 1)[-1] in fmts] if fmts else acc
+        acc = [f for f in acc if f.lower().rsplit('.', 1)[-1] in fmts]
+    
     return acc
 
 def get_collection_items(ia: str, collection_id: str) -> List[str]:
     r = run_cmd([ia, "search", f'collection:"{collection_id}"', "--itemlist"])
     return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
 
-def verify_local_file(ia: str, identifier: str, filename: str, local_path: Path, checksum: bool) -> bool:
-    if not local_path.exists() or local_path.stat().st_size == 0: return False
-    if not checksum: return True
-    r = run_cmd([ia, "verify", identifier, filename, "--quiet"])
-    return r.returncode == 0
+def verify_local_file(filename: str, local_path: Path, manifest_entry: dict, verify_mode: str = "size") -> bool:
+    """Verify a local file against manifest metadata (exists, size, or checksum)."""
+    if not local_path.exists():
+        return False
+    
+    if verify_mode == "exists":
+        return True
+
+    # Check size
+    try:
+        remote_size = manifest_entry.get("size")
+        if remote_size is not None:
+            if local_path.stat().st_size != int(remote_size):
+                return False
+        elif local_path.stat().st_size == 0:
+            return False
+    except (ValueError, TypeError, OSError):
+        return False
+
+    if verify_mode == "size":
+        return True
+    
+    if verify_mode == "checksum":
+        # Check MD5 or SHA1 from manifest
+        remote_md5 = manifest_entry.get("md5")
+        remote_sha1 = manifest_entry.get("sha1")
+        
+        if remote_md5:
+            return calculate_checksum(local_path, "md5") == remote_md5
+        elif remote_sha1:
+            return calculate_checksum(local_path, "sha1") == remote_sha1
+    
+    # If no checksum in manifest or unknown mode, we've verified size at least
+    return True
 
 _spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -303,87 +503,97 @@ def _print_progress(msg: str, idx: int, total: int, counter=[0]) -> None:
     sys.stdout.flush()
 
 def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
+                         manifest_entry: dict,
                          retries: int, progress_timeout: int, max_timeout: int,
-                         checksum: bool, idx: int, total: int, max_mbps: float) -> Tuple[str, bool]:
+                         verify_mode: str, idx: int, total: int, max_mbps: float,
+                         source: str|None=None, on_the_fly: bool=False,
+                         xml_names: bool=False, ignore_existing: bool=False,
+                         no_directories: bool=False,
+                         bucket: TokenBucket|None=None) -> Tuple[str, bool]:
     if _shutdown_event.is_set(): return filename, False
     # Expected path (our layout)
     local_path = destdir / filename
     # Alternate path: some ia versions add an extra identifier dir under --destdir
     alt_local_path = destdir / identifier / filename
-    if local_path.exists() and verify_local_file(ia, identifier, filename, local_path, checksum):
+    if local_path.exists() and verify_local_file(filename, local_path, manifest_entry, verify_mode):
         _print_progress(f"✔ already have {filename}", idx, total)
         return filename, True
     # Fallback: accept files that exist under the nested identifier directory
-    if alt_local_path.exists() and verify_local_file(ia, identifier, filename, alt_local_path, checksum):
+    if alt_local_path.exists() and verify_local_file(filename, alt_local_path, manifest_entry, verify_mode):
         _print_progress(f"✔ already have {identifier}/{filename}", idx, total)
         return filename, True
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    # Align ia's output folder with our expected layout.
-    # If destdir already ends with the identifier (non-collection mode), pass the parent
-    # to ia so it will create exactly one <identifier>/ layer.
-    ia_destdir = destdir.parent if destdir.name == str(identifier) else destdir
+    
     # Respect global polite backoff before starting a network-heavy call
     _backoff_wait_if_needed()
 
-    cmd = [ia, "download", identifier, filename, "--destdir", str(ia_destdir)]
-    if checksum: cmd.append("--checksum")
-    cmd += ["--retries", str(retries)]
-    # Bandwidth cap via trickle if available
-    if max_mbps and max_mbps > 0:
-        trickle_path = shutil.which("trickle")
-        if trickle_path:
-            kbps = int(max_mbps * 1024 / 8)
-            cmd = [trickle_path, "-d", str(max(kbps,1))] + cmd
-        else:
-            logging.warning("Requested bandwidth cap --max-mbps=%.2f but 'trickle' not found in PATH", max_mbps)
     start = time.time()
-    env = os.environ.copy()
-    env.setdefault("PYTHONWARNINGS", "ignore")
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
-    _running_processes.append(proc)
-    last_progress_time = start
-    while proc.poll() is None:
-        if _shutdown_event.is_set():
-            proc.terminate(); break
-        time.sleep(1)
-        now = time.time()
-        # Support alt path (identifier nested). Use whichever exists.
-        observed_path = None
-        if local_path.exists():
-            observed_path = local_path
-        elif alt_local_path.exists():
-            observed_path = alt_local_path
-        if observed_path is not None:
-            size = observed_path.stat().st_size
-            _update_aggregate_bytes(observed_path, size)
-            _print_progress(f"{filename[:40]:40} {_human_bytes(size)}", idx, total)
-            if size > 0: last_progress_time = now
-        if (now-last_progress_time) > progress_timeout or (now-start) > max_timeout:
-            logging.error("Timeout on %s", filename)
-            try: proc.send_signal(signal.SIGINT)
-            except Exception: pass
-            for _ in range(10):
-                if proc.poll() is not None: break
-                time.sleep(1)
-            if proc.poll() is None:
-                try: proc.terminate()
-                except Exception: pass
-            break
-    stdout, stderr = proc.communicate()
-    _running_processes.remove(proc)
-    success = proc.returncode == 0 and (
-        verify_local_file(ia, identifier, filename, local_path, checksum)
-        or verify_local_file(ia, identifier, filename, alt_local_path, checksum)
-    )
-    if not success:
-        logging.error("Download failed for %s: %s %s", filename, stdout, stderr)
-        # Detect common throttling/server error signals and register backoff
-        s = (stdout or "") + "\n" + (stderr or "")
-        if any(x in s for x in [" 429 ", "Too Many Requests", "rate limit", "Rate limit", "Retry-After"]) or \
-           any(f" {code} " in s for code in ["500","502","503","504"]):
-            _backoff_register_event("throttle/server error")
-    else:
-        _backoff_relax()
+    success = False
+    
+    # For the library call, we still use a boolean for checksum
+    do_checksum = (verify_mode == "checksum")
+    
+    try:
+        item = internetarchive.get_item(identifier)
+        ia_file = item.get_file(filename)
+        
+        # Use a temporary file for downloading to avoid partial files on failure
+        tmp_path = local_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        
+        def update_progress(current_size):
+            _update_aggregate_bytes(tmp_path, current_size)
+            _print_progress(f"{filename[:40]:40} {_human_bytes(current_size)}", idx, total)
+
+        # Custom throttled file wrapper that also updates progress
+        class ProgressThrottledFile(ThrottledFile):
+            def __init__(self, fileobj, bucket, progress_cb):
+                super().__init__(fileobj, bucket)
+                self.progress_cb = progress_cb
+                self.current_size = 0
+                self.last_update = time.time()
+
+            def write(self, data):
+                n = super().write(data)
+                self.current_size += n
+                now = time.time()
+                # Update progress display at most once per second
+                if now - self.last_update > 1.0:
+                    self.progress_cb(self.current_size)
+                    self.last_update = now
+                return n
+
+        # Download using the internetarchive library
+        with open(tmp_path, 'wb') as f:
+            with ProgressThrottledFile(f, bucket, update_progress) as throttled_f:
+                # Note: internetarchive library uses requests internally.
+                # We pass timeout and params (for source).
+                # checksum=True in library will verify after download.
+                success = ia_file.download(
+                    fileobj=throttled_f,
+                    retries=retries,
+                    checksum=do_checksum,
+                    timeout=progress_timeout,
+                    params={'source': source} if source else None
+                )
+        
+        if success:
+            # Final progress update
+            update_progress(tmp_path.stat().st_size)
+            tmp_path.replace(local_path)
+            _backoff_relax()
+        else:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            logging.error("Download failed for %s", filename)
+
+    except Exception as e:
+        if 'tmp_path' in locals() and tmp_path.exists():
+            try: tmp_path.unlink()
+            except: pass
+        logging.error("Exception downloading %s: %s", filename, e)
+        _backoff_register_event(str(e))
+        success = False
+
     return filename, success
 
 # ---------- Signals ----------
@@ -401,15 +611,19 @@ signal.signal(signal.SIGTERM, signal_handler)
 # ---------- Env → Arg injection (before argparse) ----------
 def inject_env_args():
     # Only inject when no CLI args given (preserve explicit CLI)
-    if len(sys.argv) > 1:
+    # We allow --print-effective-config to still trigger injection if it's the only arg
+    args_to_ignore = {"--print-effective-config"}
+    actual_args = [a for a in sys.argv[1:] if a not in args_to_ignore]
+    if len(actual_args) > 0:
         return
+
     # Prefer IA_IDENTIFIER for the item/collection identifier
     env_id = os.getenv("IA_IDENTIFIER") or os.getenv("IA_ITEM_NAME")
     if not env_id:
         return
     
     # Start with identifier
-    argv = [sys.argv[0], env_id]
+    new_args = [env_id]
 
     # boolean flags mapping
     bool_map = {
@@ -422,6 +636,11 @@ def inject_env_args():
         "IA_NO_LOCK": "--no-lock",
         "IA_NO_BACKOFF": "--no-backoff",
         "IA_USE_BATCH_SOURCE": "--use-batch-source",
+        "IA_ON_THE_FLY": "--on-the-fly",
+        "IA_XML_NAMES": "--xml-names",
+        "IA_IGNORE_EXISTING": "--ignore-existing",
+        "IA_NO_DIRECTORIES": "--no-directories",
+        "IA_SYNC": "--sync",
     }
 
     # value flags mapping: env -> (flag,)
@@ -443,24 +662,26 @@ def inject_env_args():
         # New pass-throughs
         "IA_EXCLUDE": ("--exclude",),
         "IA_FORMAT": ("--format",),
+        "IA_SOURCE": ("--source",),
         "IA_BACKOFF_BASE": ("--backoff-base",),
         "IA_BACKOFF_MAX": ("--backoff-max",),
         "IA_BACKOFF_MULTIPLIER": ("--backoff-multiplier",),
         "IA_BACKOFF_JITTER": ("--backoff-jitter",),
         "IA_BATCH_SOURCE_PATH": ("--batch-source-path",),
+        "IA_VERIFY_MODE": ("--verify-mode",),
     }
 
     for env, flag in bool_map.items():
         v = os.getenv(env)
         if v and v.lower() not in ("0", "false", "no", "off"):
-            argv.append(flag)
+            new_args.append(flag)
 
     # Handle IA_GLOB specially for multiple values
     v_glob = os.getenv("IA_GLOB")
     if v_glob:
         parts = [p for p in [s.strip() for s in v_glob.replace(" ", ",").split(",") ] if p]
         for p in parts:
-            argv.extend(["-g", p])
+            new_args.extend(["-g", p])
 
     for env, tup in value_map.items():
         if env in ("IA_GLOB",):
@@ -471,11 +692,12 @@ def inject_env_args():
             if env in ("IA_EXCLUDE", "IA_FORMAT") and ("," in v or " " in v):
                 parts = [p for p in [s.strip() for s in v.replace(" ", ",").split(",") ] if p]
                 for p in parts:
-                    argv.extend([tup[0], p])
+                    new_args.extend([tup[0], p])
             else:
-                argv.extend([tup[0], v])
+                new_args.extend([tup[0], v])
 
-    sys.argv = argv
+    # Insert new_args after the script name, preserving existing args
+    sys.argv = [sys.argv[0]] + new_args + sys.argv[1:]
 
 def write_report(report_path: Path, data: dict):
     try:
@@ -483,9 +705,78 @@ def write_report(report_path: Path, data: dict):
     except Exception as e:
         print(f"WARNING: Failed to write {report_path.name}: {e}", file=sys.stderr)
 
+def perform_sync(dest: Path, manifests: dict, dry_run: bool) -> List[str]:
+    """Identify and optionally delete local files not in any manifest."""
+    valid_files = set()
+    for item_id, manifest in manifests.items():
+        for filename in manifest.keys():
+            valid_files.add(filename)
+            # Also consider the alternate path if it was used
+            valid_files.add(os.path.join(item_id, filename))
+
+    orphans = []
+    # Files to never delete
+    ignored_files = {REPORT_FILENAME, "ia_download.log", ".DS_Store"}
+    ignored_dirs = {".ia_status"}
+
+    logging.info("Starting sync/cleanup phase in %s", dest)
+    for root, dirs, files in os.walk(dest):
+        rel_root = Path(root).relative_to(dest)
+        
+        # Skip ignored directories
+        if any(part in ignored_dirs for part in rel_root.parts):
+            continue
+        
+        # Filter out ignored directories from walk to prevent descending into them
+        dirs[:] = [d for d in dirs if d not in ignored_dirs]
+
+        for f in files:
+            if f in ignored_files:
+                continue
+            
+            rel_path = rel_root / f
+            rel_path_str = str(rel_path)
+            
+            # Normalize path for comparison (IA uses forward slashes)
+            norm_path = rel_path_str.replace(os.sep, '/')
+            
+            if norm_path not in valid_files:
+                orphans.append(norm_path)
+                if not dry_run:
+                    try:
+                        (dest / rel_path).unlink()
+                        logging.info("Deleted orphaned file: %s", norm_path)
+                    except Exception as e:
+                        logging.error("Failed to delete %s: %s", norm_path, e)
+    
+    # Optional: clean up empty directories
+    if not dry_run:
+        for root, dirs, files in os.walk(dest, topdown=False):
+            rel_root = Path(root).relative_to(dest)
+            if any(part in ignored_dirs for part in rel_root.parts) or str(rel_root) == ".":
+                continue
+            if not os.listdir(root):
+                try:
+                    os.rmdir(root)
+                    logging.info("Removed empty directory: %s", rel_root)
+                except Exception:
+                    pass
+
+    return orphans
+
 def main():
 
     inject_env_args()
+    
+    # Health check server initialization
+    is_child = os.environ.get("IA_IS_CHILD") == "1"
+    health_port = int(os.environ.get("IA_HEALTH_PORT", "8080"))
+    health_server = None
+    if not is_child and health_port > 0:
+        health_server = HealthCheckServer(health_port)
+        health_server.start()
+        atexit.register(health_server.stop)
+
     ap = argparse.ArgumentParser(description="Parallel IA downloader with resume + mirror")
     ap.add_argument("identifier", nargs='?', help="Item or collection ID (required unless --print-effective-config)")
     ap.add_argument("--destdir", help="Destination directory (default: ./<identifier>)")
@@ -493,6 +784,12 @@ def main():
     ap.add_argument("-g","--glob", action="append", default=[], help="Glob pattern; can be repeated or comma-separated (default: all files)")
     ap.add_argument("-x","--exclude", action="append", default=[], help="Exclude glob; can be repeated or comma-separated")
     ap.add_argument("-f","--format", dest="formats", action="append", default=[], help="Restrict to extensions (e.g., mp3,flac); can be repeated or comma-separated")
+    ap.add_argument("--source", help="Filter by source type: original, derivative, or metadata")
+    ap.add_argument("--on-the-fly", action="store_true", help="Enable dynamic zip generation")
+    ap.add_argument("--xml-names", action="store_true", help="Use filenames from metadata XML")
+    ap.add_argument("--ignore-existing", action="store_true", help="Skip files if they exist without size/checksum check")
+    ap.add_argument("--no-directories", action="store_true", help="Flatten download into a single directory")
+    ap.add_argument("--sync", action="store_true", help="Advanced Sync: delete local files not present in remote IA item")
     ap.add_argument("-j","--concurrency", type=int, default=5, help="Parallel workers (default 5)")
     ap.add_argument("--retries", type=int, default=5, help="Retries per file")
     ap.add_argument("--progress-timeout", type=int, default=900, help="No-progress timeout (s)")
@@ -502,10 +799,11 @@ def main():
                     help="Only consider .zip files and skip any zip whose folder already exists in destdir")
     ap.add_argument("--dry-run", action="store_true", help="Show what would be downloaded/skipped and exit")
     ap.add_argument("--verify-only", action="store_true", help="Only verify existing files")
-    ap.add_argument("--checksum", action="store_true", help="Enable checksum verification")
+    ap.add_argument("--verify-mode", choices=["exists", "size", "checksum"], help="Verification level: exists, size (default), or checksum")
+    ap.add_argument("--checksum", action="store_true", help="Enable checksum verification (alias for --verify-mode checksum)")
     ap.add_argument("--ia-path", help="Path to ia executable")
     ap.add_argument("--estimate-only", action="store_true", help="Only output size/time/cost estimates and exit")
-    ap.add_argument("--max-mbps", type=float, default=0.0, help="Throttle max bandwidth (Mbps, approx). Only active if set; tries 'trickle' if present.")
+    ap.add_argument("--max-mbps", type=float, default=0.0, help="Throttle max bandwidth (Mbps, approx). Only active if set.")
     ap.add_argument("--assumed-mbps", type=float, default=float(os.environ.get("IA_ASSUMED_MBPS", "100")), help="Assumed bandwidth for ETA if uncapped")
     ap.add_argument("--no-lock", action="store_true", help="Do not create a lockfile in destdir (unsafe for concurrent runs)")
     ap.add_argument("--no-backoff", action="store_true", help="Disable polite exponential backoff on 429/5xx errors")
@@ -516,10 +814,17 @@ def main():
     ap.add_argument("--cost-per-gb", type=float, default=float(os.environ.get("IA_COST_PER_GB", "0")), help="Optional cost per GB (USD) for estimate")
     ap.add_argument("--dryrun-mbps", type=float, default=500.0, help="Simulation speed (Mbps) for --dry-run dynamic ETA (default 500 Mbps)")
     ap.add_argument("--speed-sample-interval", type=int, default=30, help="Interval in seconds for aggregate speed sampling (default 30)")
+    ap.add_argument("--force-metadata-update", action="store_true", help="Force refresh of local metadata manifest")
     ap.add_argument("--print-effective-config", action="store_true", help="Print derived configuration (env + args) and exit")
     ap.add_argument("--use-batch-source", action="store_true", help="Read batch source CSV (two columns: source identifier, destination path)")
     ap.add_argument("--batch-source-path", default=os.environ.get("IA_BATCH_SOURCE_PATH", "batch_source.csv"), help="Path to batch_source.csv (default ./batch_source.csv)")
     args = ap.parse_args()
+
+    # Resolve verify mode
+    if not args.verify_mode:
+        args.verify_mode = "checksum" if args.checksum else "size"
+    if args.verify_mode == "checksum":
+        args.checksum = True
 
     # Fix: If --print-effective-config is set, fill identifier/destdir from env if missing
     if args.print_effective_config:
@@ -542,55 +847,99 @@ def main():
             return 2
         pairs = []
         with csv_path.open(newline='') as fh:
-            reader = csv.reader(fh)
-            for row in reader:
-                if not row or len(row) < 2:
-                    continue
-                src = (row[0] or '').strip()
-                dst = (row[1] or '').strip()
-                if not src or src.lower() == 'source':  # skip header
-                    continue
-                pairs.append((src, dst))
+            reader = csv.DictReader(fh)
+            if reader.fieldnames and 'source' in reader.fieldnames:
+                for row in reader:
+                    src = (row.get('source') or '').strip()
+                    dst = (row.get('destdir') or '').strip()
+                    if not src: continue
+                    overrides = {k: v.strip() for k, v in row.items() if k in ['glob', 'exclude', 'format', 'concurrency', 'verify_mode', 'source'] and v and v.strip()}
+                    pairs.append((src, dst, overrides))
+            else:
+                fh.seek(0)
+                reader = csv.reader(fh)
+                for row in reader:
+                    if not row or len(row) < 2:
+                        continue
+                    src = (row[0] or '').strip()
+                    dst = (row[1] or '').strip()
+                    if not src or src.lower() == 'source':  # skip header
+                        continue
+                    pairs.append((src, dst, {}))
+
         if not pairs:
             print("❌ Batch source CSV contains no valid rows.", file=sys.stderr)
             return 2
         print(f"📑 Batch mode: processing {len(pairs)} rows from {csv_path}")
-        # Build common flags from current args (excluding identifier/destdir)
-        def add_flag(flag, cond):
-            return [flag] if cond else []
-        common = []
-        for g in (args.glob or []):
-            common += ["-g", g]
-        for x in (args.exclude or []):
-            common += ["-x", x]
-        for f in (args.formats or []):
-            common += ["-f", f]
-        common += ["-j", str(args.concurrency), "--retries", str(args.retries),
-                   "--progress-timeout", str(args.progress_timeout), "--max-timeout", str(args.max_timeout)]
-        common += add_flag("--collection", args.collection)
-        common += add_flag("--resumefolders", args.resumefolders)
-        common += add_flag("--dry-run", args.dry_run)
-        common += add_flag("--verify-only", args.verify_only)
-        common += add_flag("--checksum", args.checksum)
-        common += add_flag("--estimate-only", args.estimate_only)
-        if args.max_mbps and args.max_mbps > 0:
-            common += ["--max-mbps", str(args.max_mbps)]
-        common += ["--assumed-mbps", str(args.assumed_mbps), "--cost-per-gb", str(args.cost_per_gb)]
-        common += add_flag("--no-lock", args.no_lock)
-        common += add_flag("--no-backoff", args.no_backoff)
-        common += ["--backoff-base", str(args.backoff_base), "--backoff-max", str(args.backoff_max),
-                   "--backoff-multiplier", str(args.backoff_multiplier), "--backoff-jitter", str(args.backoff_jitter),
-                   "--speed-sample-interval", str(args.speed_sample_interval)]
-        if args.ia_path:
-            common += ["--ia-path", args.ia_path]
 
         failures = 0
         seq = 0
-        for src, dst in pairs:
+        for src, dst, overrides in pairs:
             seq += 1
             print(f"\n===== Batch {seq}/{len(pairs)}: {src} -> {dst} =====")
-            cmd = [sys.executable, str(Path(__file__).resolve()), src, "--destdir", dst] + common
-            res = subprocess.run(cmd)
+            
+            # Resolve destination for health check reporting
+            item_dest_base = Path(dst).resolve()
+            if str(item_dest_base) == "/data":
+                item_dest = item_dest_base / src
+            else:
+                item_dest = item_dest_base
+            
+            if health_server:
+                health_server.set_report_path(item_dest / REPORT_FILENAME)
+
+            # Build command for this item
+            cmd = [sys.executable, str(Path(__file__).resolve()), src, "--destdir", dst]
+            
+            # Apply overrides or defaults
+            def add_multi(flag, key, default_list):
+                val = overrides.get(key)
+                if val:
+                    for p in [s.strip() for s in val.split(",") if s.strip()]:
+                        cmd.extend([flag, p])
+                else:
+                    for p in default_list:
+                        cmd.extend([flag, p])
+
+            add_multi("-g", "glob", args.glob)
+            add_multi("-x", "exclude", args.exclude)
+            add_multi("-f", "format", args.formats)
+            
+            cmd += ["-j", str(overrides.get("concurrency", args.concurrency))]
+            cmd += ["--verify-mode", overrides.get("verify_mode", args.verify_mode)]
+            
+            # Common flags
+            cmd += ["--retries", str(args.retries), "--progress-timeout", str(args.progress_timeout), "--max-timeout", str(args.max_timeout)]
+            if args.collection: cmd.append("--collection")
+            if args.resumefolders: cmd.append("--resumefolders")
+            if args.dry_run: cmd.append("--dry-run")
+            if args.verify_only: cmd.append("--verify-only")
+            if args.checksum: cmd.append("--checksum")
+            if args.estimate_only: cmd.append("--estimate-only")
+            if args.on_the_fly: cmd.append("--on-the-fly")
+            if args.xml_names: cmd.append("--xml-names")
+            if args.ignore_existing: cmd.append("--ignore-existing")
+            if args.no_directories: cmd.append("--no-directories")
+            if args.sync: cmd.append("--sync")
+            
+            source_val = overrides.get("source", args.source)
+            if source_val:
+                cmd += ["--source", source_val]
+            
+            if args.max_mbps and args.max_mbps > 0:
+                cmd += ["--max-mbps", str(args.max_mbps)]
+            cmd += ["--assumed-mbps", str(args.assumed_mbps), "--cost-per-gb", str(args.cost_per_gb)]
+            if args.no_lock: cmd.append("--no-lock")
+            if args.no_backoff: cmd.append("--no-backoff")
+            cmd += ["--backoff-base", str(args.backoff_base), "--backoff-max", str(args.backoff_max),
+                       "--backoff-multiplier", str(args.backoff_multiplier), "--backoff-jitter", str(args.backoff_jitter),
+                       "--speed-sample-interval", str(args.speed_sample_interval)]
+            if args.ia_path:
+                cmd += ["--ia-path", args.ia_path]
+
+            env = os.environ.copy()
+            env["IA_IS_CHILD"] = "1"
+            res = subprocess.run(cmd, env=env)
             if res.returncode != 0:
                 failures += 1
         if failures:
@@ -611,6 +960,8 @@ def main():
         dest = Path(f"/data/{args.identifier}").resolve()
     dest.mkdir(parents=True, exist_ok=True)
     init_logging(dest)
+    if health_server:
+        health_server.set_report_path(dest / REPORT_FILENAME)
     ia = find_ia_executable(args.ia_path)
 
     # Configure global backoff settings
@@ -651,7 +1002,7 @@ def main():
                 if lock_path.exists():
                     try:
                         cur = json.loads(lock_path.read_text())
-                        if isinstance(cur, dict) and cur.get("uuid") == lock_info.get("uuid"):
+                        if isinstance(cur, dict) and lock_info and cur.get("uuid") == lock_info.get("uuid"):
                             lock_path.unlink(missing_ok=True)
                     except Exception:
                         pass
@@ -665,6 +1016,12 @@ def main():
         "glob": args.glob,
         "exclude": args.exclude,
         "formats": args.formats,
+        "source": args.source,
+        "on_the_fly": args.on_the_fly,
+        "xml_names": args.xml_names,
+        "ignore_existing": args.ignore_existing,
+        "no_directories": args.no_directories,
+        "sync": args.sync,
         "concurrency": args.concurrency,
         "retries": args.retries,
         "progress_timeout": args.progress_timeout,
@@ -673,6 +1030,7 @@ def main():
         "resumefolders": args.resumefolders,
         "dry_run": args.dry_run,
         "verify_only": args.verify_only,
+        "verify_mode": args.verify_mode,
         "checksum": args.checksum,
         "estimate_only": args.estimate_only,
         "max_mbps": args.max_mbps,
@@ -693,48 +1051,40 @@ def main():
         print(json.dumps(cfg, indent=2))
         return 0
 
-    status = load_status(args.identifier, dest)
+    identifier = args.identifier
+    if not identifier:
+        if args.print_effective_config: return 0
+        ap.error("identifier required")
+        return 1
+
+    status = load_status(identifier, dest)
     
     # Smart collection/item detection with fallback
     if args.collection:
-        items = get_collection_items(ia, args.identifier)
+        items = get_collection_items(ia, identifier)
         if not items:
-            logging.warning("Collection '%s' not found or contains no items. Attempting to download as single item instead.", args.identifier)
-            items = [args.identifier]
-            # Update config to reflect the fallback
+            logging.warning("Collection '%s' not found or contains no items. Attempting to download as single item instead.", identifier)
+            items = [identifier]
             cfg["collection"] = False
             cfg["fallback_to_item"] = True
     else:
-        items = [args.identifier]
+        items = [identifier]
+
+    # Fetch manifests for all items
+    manifests = {}
+    for item_id in items:
+        try:
+            manifests[item_id] = get_manifest(item_id, dest, force_update=args.force_metadata_update)
+        except Exception as e:
+            logging.error("Could not get manifest for %s: %s", item_id, e)
+            if len(items) == 1:
+                return 1
 
     # Log what we're about to process
-    if len(items) == 1 and items[0] == args.identifier:
-        logging.info("Processing as single item: %s", args.identifier)
+    if len(items) == 1 and items[0] == identifier:
+        logging.info("Processing as single item: %s", identifier)
     else:
-        logging.info("Processing collection '%s' with %d items", args.identifier, len(items))
-        if logging.getLogger().isEnabledFor(logging.DEBUG):
-            for i, item in enumerate(items[:5]):  # Show first 5 items
-                logging.debug("  Item %d: %s", i+1, item)
-            if len(items) > 5:
-                logging.debug("  ... and %d more items", len(items) - 5)
-
-    # Metadata for size estimates
-    def fetch_size_map(items_list):
-        size_map = {}
-        for it in items_list:
-            try:
-                r = run_cmd([ia, "metadata", it])
-                if r.returncode != 0:
-                    continue
-                meta = json.loads(r.stdout)
-                for f in meta.get("files", []):
-                    name = f.get("name")
-                    size = f.get("size")
-                    if name and isinstance(size, (int, float)):
-                        size_map[(it, name)] = int(size)
-            except Exception as e:
-                logging.warning("Failed metadata fetch for %s: %s", it, e)
-        return size_map
+        logging.info("Processing collection '%s' with %d items", identifier, len(items))
 
     if args.resumefolders:
         zip_glob = "*.zip"
@@ -742,8 +1092,8 @@ def main():
         will_skip = []
         will_download = []
         for item in items:
-            # In resumefolders mode we only consider zip files; ignore format filters
-            files = get_file_list(ia, item, [zip_glob], args.exclude, None)
+            manifest = manifests.get(item, {})
+            files = get_file_list(manifest, [zip_glob], args.exclude, None)
             for fn in files:
                 stem = Path(fn).stem
                 folder_path = dest / stem
@@ -754,7 +1104,7 @@ def main():
                     will_download.append((item, fn))
         if args.dry_run:
             print(f"📋 resumefolders dry-run for target: {dest}")
-            print(f"Found {sum(len(get_file_list(ia, it, zip_glob)) for it in items)} zip files in IA archive(s)")
+            print(f"Found {len(will_skip) + len(will_download)} zip files in IA archive(s)")
             print(f"Would skip {len(will_skip)} (local folder exists)")
             for _,fn in will_skip: print(f"  SKIP: {fn}")
             print(f"Would download {len(will_download)} zip files")
@@ -769,7 +1119,7 @@ def main():
             elif g:
                 include_globs.append(g)
         if not include_globs:
-            include_globs = ["*"]  # Default if none specified
+            include_globs = ["*"]
         exclude_globs = []
         for x in (args.exclude or []):
             if x and ("," in x):
@@ -783,17 +1133,9 @@ def main():
             elif f:
                 formats.append(f)
 
-        job_list = [(item,f) for item in items for f in get_file_list(ia, item, include_globs, exclude_globs, formats)]
+        job_list = [(item, f) for item in items for f in get_file_list(manifests.get(item, {}), include_globs, exclude_globs, formats)]
 
-    logging.info("Found %d items to process: %s", len(items), items)
     logging.info("Built job list with %d files", len(job_list))
-    if len(job_list) == 0 and len(items) > 0:
-        # Debug: check what get_file_list returns
-        for item in items:
-            test_globs = ["*"] if not args.glob else args.glob
-            files = get_file_list(ia, item, test_globs, [], [])
-            logging.warning("get_file_list('%s', '%s', %s) returned %d files: %s", ia, item, test_globs, len(files), files[:5] if files else [])
-
     total_jobs = len(job_list)
     if not total_jobs:
         print("❌ No matching files.", file=sys.stderr)
@@ -804,37 +1146,39 @@ def main():
         status["pending"] = []
         status["done"] = status.get("done", [])
         
-        # Check each file to see if it already exists and is valid
         for item, fname in job_list:
             key = f"{item}/{fname}"
             local_path = dest / fname
             alt_local_path = dest / item / fname
+            manifest_entry = manifests.get(item, {}).get(fname, {})
             
-            # Check if file already exists and is valid
-            if ((local_path.exists() and verify_local_file(ia, item, fname, local_path, args.checksum)) or
-                (alt_local_path.exists() and verify_local_file(ia, item, fname, alt_local_path, args.checksum))):
+            if ((local_path.exists() and verify_local_file(fname, local_path, manifest_entry, args.verify_mode)) or
+                (alt_local_path.exists() and verify_local_file(fname, alt_local_path, manifest_entry, args.verify_mode))):
                 if key not in status["done"]:
                     status["done"].append(key)
             else:
                 if key not in status["pending"]:
                     status["pending"].append(key)
         
-        # Save the updated status
-        save_status(args.identifier, dest, status)
+        save_status(identifier, dest, status)
 
-    size_map = fetch_size_map(items)
     total_remote_bytes = 0
     remaining_bytes = 0
     known_files = 0
     unknown_files = 0
     for item, fname in job_list:
-        key = (item, fname)
-        sz = size_map.get(key)
+        manifest_entry = manifests.get(item, {}).get(fname, {})
+        sz = manifest_entry.get("size")
         if sz is None:
             unknown_files += 1; continue
+        try:
+            sz = int(sz)
+        except (ValueError, TypeError):
+            unknown_files += 1; continue
+            
         total_remote_bytes += sz
         local_path = (dest / fname)
-        alt_local_path = dest / key[0] / key[1]
+        alt_local_path = dest / item / fname
         if local_path.exists():
             local_size = local_path.stat().st_size
         elif alt_local_path.exists():
@@ -869,14 +1213,23 @@ def main():
         print(" Exiting due to --estimate-only")
         write_report(dest/REPORT_FILENAME, {"schema_version":1,"status":"estimate-only","files_total": total_jobs, "known_size_bytes": total_remote_bytes, "remaining_known_bytes": remaining_bytes, "estimated_seconds": est_seconds, "config":cfg})
         return 0
-    # If dry-run we simulate dynamic ETA using provided dryrun speed.
     if args.dry_run:
         sim_speed_mbps = args.dryrun_mbps if args.dryrun_mbps > 0 else 500.0
-        # Recompute ETA under simulation speed using remaining_bytes
         sim_seconds = (remaining_bytes * 8) / (sim_speed_mbps * 1_000_000) if sim_speed_mbps > 0 else 0
         sim_eta = _format_eta(sim_seconds)
         print(f"\n🧪 Dry-run simulation assuming {sim_speed_mbps:.1f} Mbps: ETA {sim_eta}")
         print("(Use --dryrun-mbps to adjust simulation speed.)")
+        
+        orphans = []
+        if args.sync:
+            orphans = perform_sync(dest, manifests, dry_run=True)
+            if orphans:
+                print(f"\n🧹 Sync Dry-Run: {len(orphans)} orphaned files would be deleted:")
+                for o in orphans[:10]: print(f"  - {o}")
+                if len(orphans) > 10: print(f"  ... and {len(orphans)-10} more")
+            else:
+                print("\n✨ Sync Dry-Run: No orphaned files found.")
+
         write_report(dest/REPORT_FILENAME, {
             "schema_version": 1,
             "status": "dry-run",
@@ -885,6 +1238,7 @@ def main():
             "remaining_known_bytes": remaining_bytes,
             "simulated_mbps": sim_speed_mbps,
             "simulated_seconds": sim_seconds,
+            "orphaned_files": orphans,
             "config": cfg,
         })
         return 0
@@ -893,17 +1247,32 @@ def main():
         for idx, (item,fname) in enumerate(job_list,1):
             p1 = dest/fname
             p2 = dest/item/fname
-            if (verify_local_file(ia, item, fname, p1, args.checksum) or
-                verify_local_file(ia, item, fname, p2, args.checksum)):
+            manifest_entry = manifests.get(item, {}).get(fname, {})
+            if (verify_local_file(fname, p1, manifest_entry, args.verify_mode) or
+                verify_local_file(fname, p2, manifest_entry, args.verify_mode)):
                 ok+=1; _print_progress(f"✔ {fname}", idx, total_jobs)
             else:
                 print(f"\n✖ {fname}")
         print(f"\nVerified {ok}/{total_jobs} OK")
-        write_report(dest/REPORT_FILENAME, {"schema_version":1,"status":"verify-only","ok":ok,"total":total_jobs,"config":cfg})
+        
+        orphans = []
+        if args.sync:
+            orphans = perform_sync(dest, manifests, dry_run=False)
+            print(f"🧹 Sync: Deleted {len(orphans)} orphaned files.")
+
+        write_report(dest/REPORT_FILENAME, {
+            "schema_version":1,
+            "status":"verify-only",
+            "ok":ok,
+            "total":total_jobs,
+            "orphaned_files_deleted": orphans,
+            "config":cfg
+        })
         return 0
 
     failures=[]
     newly_downloaded = []
+    orphans = []
     already_had = list(status.get('done', []))  # Files that were already complete before we started
     
     print(f"📋 {len(status['pending'])} files pending, {len(status['done'])} done.")
@@ -914,6 +1283,13 @@ def main():
     _remaining_known_bytes_start = remaining_bytes
     _bytes_downloaded_initial = total_remote_bytes - remaining_bytes
     _speed_sample_interval = max(5, args.speed_sample_interval)  # enforce a sane minimum
+
+    # Initialize global bandwidth bucket if max_mbps is set
+    global_bucket = None
+    if args.max_mbps and args.max_mbps > 0:
+        rate_bps = (args.max_mbps * 1_000_000) / 8
+        global_bucket = TokenBucket(rate_bps)
+        logging.info("Native bandwidth limiter initialized at %.2f Mbps", args.max_mbps)
 
     # Start sampler thread
     initial_assumed = assumed_mbps if assumed_mbps > 0 else args.assumed_mbps
@@ -929,13 +1305,20 @@ def main():
                 item,
                 fname,
                 dest,
+                manifests.get(item, {}).get(fname, {}),
                 args.retries,
                 args.progress_timeout,
                 args.max_timeout,
-                args.checksum,
+                args.verify_mode,
                 idx,
                 total_jobs,
                 args.max_mbps,
+                args.source,
+                args.on_the_fly,
+                args.xml_names,
+                args.ignore_existing,
+                args.no_directories,
+                global_bucket,
             ): (item, fname)
             for idx, (item, fname) in enumerate(job_list, 1)
             if f"{item}/{fname}" in status["pending"]
@@ -955,7 +1338,11 @@ def main():
                     status["pending"].remove(key)
             else:
                 failures.append(key)
-            save_status(args.identifier, dest, status)
+            save_status(identifier, dest, status)
+        
+        if args.sync and not _shutdown_event.is_set():
+            orphans = perform_sync(dest, manifests, dry_run=False)
+            print(f"\n🧹 Sync: Deleted {len(orphans)} orphaned files.")
     finally:
         # ensure a final report is written even on SIGTERM
         end_ts = time.time()
@@ -966,6 +1353,7 @@ def main():
             "newly_downloaded": newly_downloaded,
             "already_downloaded": already_had,
             "failed": failures,
+            "orphaned_files_deleted": orphans,
             "duration_sec": round(end_ts-start_ts,2),
             "timestamp_utc": end_ts,
             "config": cfg,
@@ -981,6 +1369,8 @@ def main():
     print(f"📥 Newly Downloaded: {len(newly_downloaded)}")
     print(f"💾 Already Had: {len(already_had)}")
     print(f"❌ Failed: {len(failures)}")
+    if args.sync:
+        print(f"🧹 Orphans Deleted: {len(orphans)}")
     end_ts = time.time()
     write_report(dest/REPORT_FILENAME, {
         "schema_version": 1,
@@ -989,6 +1379,7 @@ def main():
         "newly_downloaded": newly_downloaded,
         "already_downloaded": already_had,
         "failed": failures,
+        "orphaned_files_deleted": orphans,
         "duration_sec": round(end_ts-start_ts,2),
         "timestamp_utc": end_ts,
         "config": cfg,

@@ -4,14 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Dependencies
+## [0.4.0] - 2025-12-19
+
+### Architecture
+- **Native Python API**: Replaced `ia` CLI subprocesses with direct `internetarchive` library usage for better performance and control.
+- **Native Throttling**: Implemented Token Bucket algorithm for bandwidth limiting, removing `trickle` dependency.
+- **Metadata Caching**: Local caching of item metadata in `.ia_status/metadata.json` to reduce API calls.
+
+### Features
+- **Advanced Sync**: New `--sync` / `IA_SYNC` mode to delete local files not present in the remote item.
+- **Health Check Server**: New HTTP server (default port 8080) exposing real-time `report.json`.
+- **Expanded API Support**: Added `--source`, `--on-the-fly`, `--xml-names`, `--ignore-existing`, `--no-directories`.
+- **Verification Levels**: Added `--verify-mode` (`exists`, `size`, `checksum`).
+
+### Security & Maintenance
+- **Base Image**: Updated to `python:3.14-slim`.
+- **Docker Scout**: Added monthly vulnerability scanning workflow.
 - Bump hadolint/hadolint-action from 3.2.0 to 3.3.0
 - Bump anchore/sbom-action from 0.20.5 to 0.20.6
 - Bump docker/login-action from 3.5.0 to 3.6.0
 - Bump peter-evans/dockerhub-description from 4.0.2 to 5.0.0
 
 ### Documentation
-- Update version examples to v0.2.3 in CLAUDE.md
+- Update version examples to v0.4.0 in CLAUDE.md
 
 ## [0.3.0] - 2025-10-28
 

@@ -20,8 +20,8 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
 
 ### Git & Release Commands
 - Check status: `git status`
-- Create release: `git tag -a v0.2.3 -m "Release v0.2.3" && git push origin v0.2.3`
-- Fix bad tag: `git push origin :refs/tags/0.2.3; git tag -d 0.2.3; git tag -a v0.2.3 -m "Release v0.2.3"; git push origin v0.2.3`
+- Create release: `git tag -a v0.4.0 -m "Release v0.4.0" && git push origin v0.4.0`
+- Fix bad tag: `git push origin :refs/tags/0.4.0; git tag -d 0.4.0; git tag -a v0.4.0 -m "Release v0.4.0"; git push origin v0.4.0`
 - View releases: `gh release list`
 
 ## Architecture

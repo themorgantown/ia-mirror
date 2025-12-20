@@ -15,3 +15,5 @@ test_output/goodytwoshoes00newy/ia_download.log
 test_output/test1.log
 /test_output
 json
+ia_download.log
+test_sync/*

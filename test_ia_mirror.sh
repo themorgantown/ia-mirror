@@ -27,15 +27,22 @@ if [ "${BUILD:-1}" = "1" ]; then
     }
 fi
 
-# Cleanup function (only called at end)
+# Cleanup function
 cleanup() {
+    local exit_code=$?
     if [ "${CLEANUP:-1}" = "1" ]; then
-        echo -e "\n${YELLOW}Cleaning up test artifacts...${NC}"
-        rm -rf ./test_output
+        if [ $exit_code -eq 0 ]; then
+            echo -e "\n${YELLOW}Cleaning up test artifacts...${NC}"
+            rm -rf ./test_output
+        else
+            echo -e "\n${YELLOW}Tests failed (exit $exit_code). Preserving artifacts in ./test_output for debugging.${NC}"
+        fi
     else
         echo -e "\n${YELLOW}Test artifacts preserved in ./test_output${NC}"
     fi
 }
+
+trap cleanup EXIT
 
 # Helper functions
 pass() {
@@ -46,6 +53,11 @@ pass() {
 fail() {
     echo -e "${RED}✗ FAIL${NC}: $1"
     ((TESTS_FAILED+=1))
+    if [ -f "./test_output/test${TESTS_RUN}.log" ]; then
+        echo -e "${YELLOW}--- Last 10 lines of log ---${NC}"
+        tail -n 10 "./test_output/test${TESTS_RUN}.log"
+        echo -e "${YELLOW}---------------------------${NC}"
+    fi
 }
 
 run_test() {
@@ -62,6 +74,18 @@ echo "======================================"
 echo "Image: $IMAGE"
 echo "Date: $(date)"
 echo ""
+
+# Test 0: Invalid configuration (missing identifier)
+run_test "Invalid configuration (missing identifier)"
+if docker run --rm "$IMAGE" > ./test_output/test0.log 2>&1; then
+    fail "Container should have failed without identifier"
+else
+    if grep -q "identifier required" ./test_output/test0.log; then
+        pass "Container failed with correct error message"
+    else
+        fail "Container failed but error message was unexpected"
+    fi
+fi
 
 # Test 1: Dry-run for a public item
 run_test "Dry-run for public item (no credentials required)"
@@ -158,7 +182,10 @@ timeout 30 docker run --rm \
     -e IA_CHECKSUM=1 \
     "$IMAGE" --print-effective-config > ./test_output/test6.json 2>&1 || true
 
-if jq -e '.identifier == "test_item" and .concurrency == 8 and .checksum == true' ./test_output/test6.json > /dev/null 2>&1; then
+# Strip non-JSON lines (like logfile path or health server messages)
+sed -n '/^{/,/^}/p' ./test_output/test6.json > ./test_output/test6_clean.json || true
+
+if jq -e '.identifier == "test_item" and .concurrency == 8 and .checksum == true' ./test_output/test6_clean.json > /dev/null 2>&1; then
     pass "Effective config printed and parsed correctly"
 else
     fail "Effective config missing or incorrect"
@@ -194,11 +221,13 @@ timeout 60 docker run --rm \
     "$IMAGE" > ./test_output/test8.log 2>&1 || true
 
 # Check if at least the metadata file was attempted/downloaded
-if [ -f ./test_output/listofearlyameri00fren/*_meta.xml ] 2>/dev/null || \
-   grep -q "already have" ./test_output/test8.log; then
-    pass "Small file download completed or file already present"
+META_FILE=$(ls ./test_output/listofearlyameri00fren/*_meta.xml 2>/dev/null || true)
+if [ -n "$META_FILE" ] && [ -s "$META_FILE" ]; then
+    pass "Small file download completed and file is not empty"
+elif grep -q "already have" ./test_output/test8.log; then
+    pass "File already present (skipped download)"
 else
-    fail "Small file download failed"
+    fail "Small file download failed or file is empty"
 fi
 
 # Test 9: Verify lockfile creation and cleanup
@@ -224,10 +253,25 @@ timeout 30 docker run --rm \
     -e IA_BACKOFF_MAX=120 \
     "$IMAGE" --print-effective-config > ./test_output/test10.json 2>&1 || true
 
-if jq -e '.backoff.base == 5 and .backoff.max == 120 and .backoff.enabled == true' ./test_output/test10.json > /dev/null 2>&1; then
+# Strip non-JSON lines
+sed -n '/^{/,/^}/p' ./test_output/test10.json > ./test_output/test10_clean.json || true
+
+if jq -e '.backoff.base == 5 and .backoff.max == 120 and .backoff.enabled == true' ./test_output/test10_clean.json > /dev/null 2>&1; then
     pass "Backoff configuration parsed correctly"
 else
     fail "Backoff configuration incorrect"
+fi
+
+# Test 11: Docker Scout (optional)
+if command -v docker-scout >/dev/null 2>&1 || docker scout version >/dev/null 2>&1; then
+    run_test "Docker Scout quickview"
+    if docker scout quickview "$IMAGE" > ./test_output/test11.log 2>&1; then
+        pass "Docker Scout quickview completed"
+    else
+        fail "Docker Scout quickview failed"
+    fi
+else
+    echo -e "\n${YELLOW}[Test 11]${NC} Skipping Docker Scout (not installed)"
 fi
 
 echo "======================================"
