@@ -6,6 +6,9 @@ Minimal Dockerized MVP for mirroring/downloading items from the Internet Archive
 
 This repository is great for large-scale, resumed, or complex downloads. It wraps the official Internet Archive Python library with advanced features like parallel downloads, bandwidth throttling, metadata caching, and a real-time health check server. It supports all major features of the official API plus powerful extras: multi-glob includes, exclude filters, smart resuming without redownloading metadata, format restrictions, lockfile safety, and structured JSON reports for dry-runs and estimates. Bonus: use `batch_source.csv` to run multiple mirrors in one go.
 
+Don't abuse the IA servers. Use reasonable concurrency, enable polite backoff (default), and consider caching metadata locally to reduce API pressure.
+IF you feel like donating to IA for bandwidth costs, consider supporting them at https://archive.org/donate/.
+
 ## QuickStart:
 
 Pull the latest published image (recommended):
@@ -212,6 +215,7 @@ Report behavior:
 
 ## Troubleshooting
 - If the image cannot find `ia`, ensure the `internetarchive` package version installed in the image provides the `ia` CLI (we pin with `IA_PYPI_VERSION` build arg). You can also bind a local `ia` binary into `/app/ia`.
+- If you hit an issue, make an issue: https://github.com/themorgantown/ia-mirror/issues
 
 # Security
 
