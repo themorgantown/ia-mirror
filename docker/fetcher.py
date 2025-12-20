@@ -515,6 +515,16 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
     local_path = destdir / filename
     # Alternate path: some ia versions add an extra identifier dir under --destdir
     alt_local_path = destdir / identifier / filename
+
+    # Check if file exists and we should ignore it
+    if ignore_existing:
+        if local_path.exists():
+            _print_progress(f"✔ ignoring existing {filename}", idx, total)
+            return filename, True
+        if alt_local_path.exists():
+            _print_progress(f"✔ ignoring existing {identifier}/{filename}", idx, total)
+            return filename, True
+
     if local_path.exists() and verify_local_file(filename, local_path, manifest_entry, verify_mode):
         _print_progress(f"✔ already have {filename}", idx, total)
         return filename, True

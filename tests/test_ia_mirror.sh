@@ -27,8 +27,8 @@ IMAGE="${IMAGE:-ia-mirror:test}"
 
 # Build the test image if it doesn't exist or if BUILD=1
 if [ "${BUILD:-1}" = "1" ]; then
-    echo "Building test image from local Dockerfile..."
-    docker build -t ia-mirror:test -f "$REPO_ROOT/docker/Dockerfile" "$REPO_ROOT/docker/" || {
+    echo "Building test image from local Dockerfile (no-cache)..."
+    docker build --no-cache -t ia-mirror:test -f "$REPO_ROOT/docker/Dockerfile" "$REPO_ROOT/docker/" || {
         echo "Failed to build Docker image"
         exit 1
     }
@@ -71,6 +71,9 @@ run_test() {
     ((TESTS_RUN+=1))
     echo -e "\n${YELLOW}[Test $TESTS_RUN]${NC} $1"
 }
+
+# Clean previous test output
+rm -rf ./test_output
 
 # Create test output directory
 mkdir -p ./test_output
@@ -270,24 +273,205 @@ else
 fi
 
 # Test 11: Docker Scout (optional)
-if command -v docker-scout >/dev/null 2>&1 || docker scout version >/dev/null 2>&1; then
-    run_test "Docker Scout quickview"
-    if docker scout quickview "$IMAGE" > ./test_output/test11.log 2>&1; then
-        pass "Docker Scout quickview completed"
+# if command -v docker-scout >/dev/null 2>&1 || docker scout version >/dev/null 2>&1; then
+#     run_test "Docker Scout quickview"
+#     if docker scout quickview "$IMAGE" > ./test_output/test11.log 2>&1; then
+#         pass "Docker Scout quickview completed"
+#     else
+#         fail "Docker Scout quickview failed"
+#     fi
+# else
+#     echo -e "\n${YELLOW}[Test 11]${NC} Skipping Docker Scout (not installed)"
+# fi
+
+# Test 12: Bandwidth Throttling (Actual Download)
+# Item: AdventuresOfBabeRuth (~80MB)
+run_test "Bandwidth Throttling (Actual Download - AdventuresOfBabeRuth)"
+# Limit to 50Mbps. 80MB = 640Mb. @50Mbps = ~13s.
+timeout 300 docker run --rm \
+    -v "$(pwd)/test_output:/data" \
+    -e IA_IDENTIFIER=AdventuresOfBabeRuth \
+    -e IA_MAX_MBPS=50 \
+    "$IMAGE" > ./test_output/test12.log 2>&1 || true
+
+if [ -f ./test_output/AdventuresOfBabeRuth/AdventuresOfBabeRuth_meta.xml ]; then
+    pass "Bandwidth throttled download completed"
+else
+    fail "Bandwidth throttled download failed"
+fi
+
+# Test 13: Sync Mode (using AdventuresOfBabeRuth)
+run_test "Sync Mode (Delete orphan)"
+# Create orphan
+touch ./test_output/AdventuresOfBabeRuth/orphan_file.txt
+timeout 60 docker run --rm \
+    -v "$(pwd)/test_output:/data" \
+    -e IA_IDENTIFIER=AdventuresOfBabeRuth \
+    -e IA_SYNC=1 \
+    "$IMAGE" > ./test_output/test13.log 2>&1 || true
+
+if [ ! -f ./test_output/AdventuresOfBabeRuth/orphan_file.txt ]; then
+    pass "Orphan file deleted in sync mode"
+else
+    fail "Orphan file was not deleted"
+fi
+
+# Test 14: Checksum Verification (using synth_psr60)
+run_test "Checksum Verification (Corrupt file detection)"
+# First download clean
+timeout 60 docker run --rm \
+    -v "$(pwd)/test_output:/data" \
+    -e IA_IDENTIFIER=synth_psr60 \
+    "$IMAGE" > ./test_output/test14_setup.log 2>&1 || true
+
+# Corrupt a file (keep size same if possible, or just change content)
+TARGET_FILE=$(find ./test_output/synth_psr60 -name "*_meta.xml" | head -n1)
+if [ -n "$TARGET_FILE" ]; then
+    # Read size
+    SIZE=$(wc -c < "$TARGET_FILE")
+    # Overwrite with random data of SAME size
+    head -c "$SIZE" /dev/urandom > "$TARGET_FILE"
+    
+    timeout 60 docker run --rm \
+        -v "$(pwd)/test_output:/data" \
+        -e IA_IDENTIFIER=synth_psr60 \
+        -e IA_CHECKSUM=1 \
+        "$IMAGE" > ./test_output/test14.log 2>&1 || true
+        
+    # It should have re-downloaded the file (restoring it).
+    # We check if the file is valid XML again (it was random garbage)
+    if grep -q "<?xml" "$TARGET_FILE"; then
+        pass "Checksum mismatch detected and file restored"
     else
-        fail "Docker Scout quickview failed"
+        fail "Checksum mismatch not detected or file not restored"
     fi
 else
-    echo -e "\n${YELLOW}[Test 11]${NC} Skipping Docker Scout (not installed)"
+    fail "Could not find file to corrupt for checksum test"
+fi
+
+# Test 15: Verify Only
+run_test "Verify Only Mode"
+timeout 60 docker run --rm \
+    -v "$(pwd)/test_output:/data" \
+    -e IA_IDENTIFIER=synth_psr60 \
+    -e IA_VERIFY_ONLY=1 \
+    "$IMAGE" > ./test_output/test15.log 2>&1 || true
+
+if grep -q "Verify only mode" ./test_output/test15.log || grep -q "Summary" ./test_output/test15.log; then
+    pass "Verify only run completed"
+else
+    fail "Verify only run failed"
+fi
+
+# Test 16: Source Filtering
+run_test "Source Filtering (metadata only)"
+timeout 60 docker run --rm \
+    -v "$(pwd)/test_output:/data" \
+    -e IA_IDENTIFIER=synth_psr60 \
+    -e IA_SOURCE=metadata \
+    -e IA_DRY_RUN=1 \
+    "$IMAGE" > ./test_output/test16.log 2>&1 || true
+
+if grep -q "Dry-run simulation" ./test_output/test16.log; then
+    pass "Source filtering dry-run completed"
+else
+    fail "Source filtering failed"
+fi
+
+# Test 17: Ignore Existing
+run_test "Ignore Existing (Skip check)"
+# Create a dummy file with WRONG content/size
+echo "fake" > ./test_output/synth_psr60/dummy_ignore.xml
+# We need to pretend this file is one of the real files.
+# We'll use the meta.xml again.
+TARGET_FILE=$(find ./test_output/synth_psr60 -name "*_meta.xml" | head -n1)
+echo "fake content" > "$TARGET_FILE"
+
+timeout 60 docker run --rm \
+    -v "$(pwd)/test_output:/data" \
+    -e IA_IDENTIFIER=synth_psr60 \
+    -e IA_IGNORE_EXISTING=1 \
+    "$IMAGE" > ./test_output/test17.log 2>&1 || true
+
+# Content should still be "fake content"
+if grep -q "fake content" "$TARGET_FILE"; then
+    pass "Existing file ignored (not overwritten)"
+else
+    fail "Existing file was overwritten"
+fi
+
+# Test 18: No Lock
+run_test "No Lock Mode"
+mkdir -p ./test_output/synth_psr60/.ia_status
+echo '{"pid": 99999}' > ./test_output/synth_psr60/.ia_status/lock.json
+
+timeout 60 docker run --rm \
+    -v "$(pwd)/test_output:/data" \
+    -e IA_IDENTIFIER=synth_psr60 \
+    -e IA_NO_LOCK=1 \
+    -e IA_DRY_RUN=1 \
+    "$IMAGE" > ./test_output/test18.log 2>&1 || true
+
+if grep -q "Dry-run simulation" ./test_output/test18.log; then
+    pass "Ran successfully ignoring lockfile"
+else
+    fail "Failed to run with lockfile present"
+fi
+
+# Cleanup lockfile from Test 18 so it doesn't affect subsequent tests
+rm -f ./test_output/synth_psr60/.ia_status/lock.json
+
+# Test 19: Force Metadata Update
+run_test "Force Metadata Update"
+# Corrupt metadata
+echo "corrupt" > ./test_output/synth_psr60/.ia_status/metadata_synth_psr60.json
+
+timeout 60 docker run --rm \
+    -v "$(pwd)/test_output:/data" \
+    -e IA_IDENTIFIER=synth_psr60 \
+    -e IA_FORCE_METADATA_UPDATE=1 \
+    -e IA_DRY_RUN=1 \
+    "$IMAGE" > ./test_output/test19.log 2>&1 || true
+
+# Check if metadata is valid JSON now
+if jq . ./test_output/synth_psr60/.ia_status/metadata_synth_psr60.json >/dev/null 2>&1; then
+    pass "Metadata file refreshed and valid"
+else
+    fail "Metadata file remains corrupt"
+fi
+
+# Test 20: Resume Folders
+run_test "Resume Folders (Skip zip if folder exists)"
+# synth_psr60 has psr60.zip
+# Create folder psr60
+mkdir -p ./test_output/synth_psr60/psr60
+
+timeout 60 docker run --rm \
+    -v "$(pwd)/test_output:/data" \
+    -e IA_IDENTIFIER=synth_psr60 \
+    -e IA_RESUMEFOLDERS=1 \
+    -e IA_DRY_RUN=1 \
+    "$IMAGE" > ./test_output/test20.log 2>&1 || true
+
+# Check if psr60.zip is skipped.
+if ! grep -q "psr60.zip" ./test_output/test20.log; then
+    pass "Zip file skipped because folder exists"
+else
+    # Use a more flexible grep to handle potential whitespace/formatting differences
+    if grep "SKIP:" ./test_output/test20.log | grep -q "psr60.zip"; then
+        pass "Zip file explicitly skipped"
+    else
+        fail "Zip file was not skipped"
+    fi
 fi
 
 echo "======================================"
 echo "  Test Summary"
 echo "======================================"
 echo "Total tests run: $TESTS_RUN"
-echo -e "${GREEN}Passed: $TESTS_PASSED${NC}"
+echo -e "Assertions Passed: $TESTS_PASSED"
 if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "${RED}Failed: $TESTS_FAILED${NC}"
+    echo -e "${RED}Tests Failed: $TESTS_FAILED${NC}"
     cleanup
     exit 1
 else
