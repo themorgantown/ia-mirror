@@ -1,0 +1,77 @@
+name: Docker Scout Monthly Monitor
+
+on:
+  schedule:
+    # Run at 06:00 UTC on the 1st of every month
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+
+jobs:
+  scan-and-report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # Required to create issues
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install Docker Scout CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh | sh
+
+      - name: Build Docker image
+        run: |
+          # Build the image locally so Scout can analyze it
+          docker buildx build --load -f docker/Dockerfile -t ia-mirror:scout docker
+
+      - name: Run Docker Scout
+        id: scout
+        run: |
+          # Initialize report file
+          echo "# Docker Scout Monthly Report" > scout-report.md
+          echo "Scan Date: $(date)" >> scout-report.md
+          echo "" >> scout-report.md
+
+          # 1. Check for High/Critical Vulnerabilities
+          # --exit-code returns non-zero if vulns are found
+          echo "## 🚨 Vulnerabilities (High/Critical)" >> scout-report.md
+          
+          # We use '|| true' to prevent the step from failing immediately, 
+          # so we can capture the result and continue to recommendations.
+          if ! docker scout cves ia-mirror:scout \
+            --only-severity high,critical \
+            --exit-code \
+            --format markdown >> scout-report.md; then
+            echo "VULNS_FOUND=true" >> $GITHUB_ENV
+          else
+            echo "No high or critical vulnerabilities found." >> scout-report.md
+          fi
+
+          echo "" >> scout-report.md
+          
+          # 2. Check for Base Image Recommendations
+          echo "## 🐳 Base Image Recommendations" >> scout-report.md
+          docker scout recommendations ia-mirror:scout \
+            --format markdown >> scout-report.md || true
+
+      - name: Create GitHub Issue
+        if: env.VULNS_FOUND == 'true'
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: "Security Alert: High Vulnerabilities Detected in Docker Image"
+          content-filepath: scout-report.md
+          labels: |
+            security
+            automated-report
+          assignees: ${{ github.actor }}

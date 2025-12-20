@@ -197,3 +197,32 @@ Report behavior:
 
 ## Troubleshooting
 - If the image cannot find `ia`, ensure the `internetarchive` package version installed in the image provides the `ia` CLI (we pin with `IA_PYPI_VERSION` build arg). You can also bind a local `ia` binary into `/app/ia`.
+
+# Security
+
+This project is provided as-is without warranties. When using credentials, ensure they are handled securely (e.g., avoid mounting host config with sensitive data in shared environments). Consider using short-lived credentials or Docker secrets for production use.
+
+## Security Scanning
+
+This project uses [Docker Scout](https://docs.docker.com/scout/) to monitor for vulnerabilities.
+
+### Automated Scanning
+A GitHub Action runs monthly to scan the image. If high-severity vulnerabilities are found or if the base image has critical updates, a GitHub Issue is automatically created with a remediation report.
+
+### Local Scanning
+You can run Docker Scout locally to check the image before pushing:
+
+```bash
+# Build the image
+docker build -f docker/Dockerfile -t ia-mirror:local docker
+
+# Quick overview
+docker scout quickview ia-mirror:local
+
+# Detailed CVE scan
+docker scout cves ia-mirror:local
+
+# Check for base image updates
+docker scout recommendations ia-mirror:local
+```
+
