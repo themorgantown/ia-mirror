@@ -4,6 +4,13 @@
 
 set -euo pipefail
 
+# Get script directory and repo root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Change to script directory to keep output local to tests/
+cd "$SCRIPT_DIR"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -21,7 +28,7 @@ IMAGE="${IMAGE:-ia-mirror:test}"
 # Build the test image if it doesn't exist or if BUILD=1
 if [ "${BUILD:-1}" = "1" ]; then
     echo "Building test image from local Dockerfile..."
-    docker build -t ia-mirror:test -f docker/Dockerfile docker/ || {
+    docker build -t ia-mirror:test -f "$REPO_ROOT/docker/Dockerfile" "$REPO_ROOT/docker/" || {
         echo "Failed to build Docker image"
         exit 1
     }

@@ -17,3 +17,4 @@ test_output/test1.log
 json
 ia_download.log
 test_sync/*
+tests/test_output/
