@@ -67,7 +67,7 @@ jobs:
 
       - name: Create GitHub Issue
         if: env.VULNS_FOUND == 'true'
-        uses: peter-evans/create-issue-from-file@v5
+        uses: peter-evans/create-issue-from-file@v6
         with:
           title: "Security Alert: High Vulnerabilities Detected in Docker Image"
           content-filepath: scout-report.md
