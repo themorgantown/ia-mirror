@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>ia-mirror</Name>
+  <Repository>themorgantown/ia-mirror</Repository>
+  <Registry>https://hub.docker.com/r/themorgantown/ia-mirror</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/themorgantown/ia-mirror/issues</Support>
+  <Project>https://github.com/themorgantown/ia-mirror</Project>
+  <Overview>
+    Dockerized Internet Archive mirror utility. Mirror items or collections with resume capability, web UI, and bandwidth throttling.
+    [br][br]
+    [b]Web UI:[/b] http://[IP]:[PORT:17865]
+  </Overview>
+  <Category>Downloaders: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:17865]</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/themorgantown/ia-mirror/main/templates/unraid-template.xml</TemplateURL>
+  <!-- <Icon>https://archive.org/images/glogo.png</Icon> -->
+  
+  <!-- Ports -->
+  <Config Name="Web UI Port" Target="17865" Default="17865" Mode="tcp" Description="Port for the Web Interface" Type="Port" Display="always" Required="true" Mask="false">17865</Config>
+  <Config Name="Health Check Port" Target="8080" Default="8080" Mode="tcp" Description="Internal health check (optional metrics)" Type="Port" Display="advanced" Required="false" Mask="false">8080</Config>
+
+  <!-- Essential Config -->
+  <Config Name="IA Identifier" Target="IA_IDENTIFIER" Default="" Mode="" Description="The Internet Archive Item or Collection ID to mirror (e.g., The_Babe_Ruth_Collection)." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Destination Path" Target="/downloads" Default="/mnt/user/downloads/ia-mirror" Mode="rw" Description="Container Path: /downloads" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Data/State Path" Target="/data" Default="/mnt/user/appdata/ia-mirror" Mode="rw" Description="Container Path: /data (Database and State)" Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <!-- Credentials -->
+  <Config Name="Access Key" Target="IA_ACCESS_KEY" Default="" Mode="" Description="Your Internet Archive S3 Access Key." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Secret Key" Target="IA_SECRET_KEY" Default="" Mode="" Description="Your Internet Archive S3 Secret Key." Type="Variable" Display="always" Required="false" Mask="true"/>
+
+  <!-- Permissions -->
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID to run as (99 = nobody)." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID to run as (100 = users)." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+
+  <!-- Advanced -->
+  <Config Name="Concurrency" Target="IA_CONCURRENCY" Default="5" Mode="" Description="Number of parallel downloads." Type="Variable" Display="advanced" Required="false" Mask="false">5</Config>
+  <Config Name="Dry Run" Target="IA_DRY_RUN" Default="0" Mode="" Description="Set to 1 to simulate only." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+</Container>
