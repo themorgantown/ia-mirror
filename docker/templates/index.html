@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ia-mirror</title>
+    <!-- preconnect for performance -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- Modern fonts: Outfit for headings, Inter for UI text, JetBrains Mono for code -->
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Outfit:wght@500;600;700&display=swap"
+        rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/colors.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+
+<body class="bg-surface">
+    <!-- Navbar / Header -->
+    <header class="app-header">
+        <div class="container-xl d-flex align-items-center justify-content-between">
+            <div class="brand d-flex align-items-center gap-3">
+                <div class="brand-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="4" y="3" width="16" height="18" rx="2" />
+                        <path d="M4 14h16" />
+                        <circle cx="8" cy="17.5" r="0.5" fill="currentColor" />
+                        <circle cx="11" cy="17.5" r="0.5" fill="currentColor" />
+                        <circle cx="12" cy="8" r="3" />
+                        <path d="M12 8l3 3" />
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="h5 mb-0 fw-bold font-heading logo-text">ia-mirror</h1>
+                    <div class="text-xs text-secondary tracking-wide">INTERNET ARCHIVE DOWNLOADER</div>
+                </div>
+            </div>
+            <div class="d-flex align-items-center gap-3">
+                <div class="status-indicator d-flex align-items-center gap-2 px-3 py-1 rounded-pill bg-offset">
+                    <div class="indicator-dot"></div>
+                    <span class="text-xs fw-medium text-secondary">System Online</span>
+                </div>
+                <!-- Settings button kept for future use, visually updated -->
+                <button class="btn btn-icon btn-ghost" id="settings-btn" aria-label="Settings">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                        </path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="container-xl py-5">
+
+        <!-- Alerts Area -->
+        <div id="creds-warning" class="alert alert-modern alert-danger d-none mb-4" role="alert">
+            <div class="d-flex align-items-center gap-3">
+                <div class="alert-icon">⚠️</div>
+                <div>
+                    <strong>Credentials Missing</strong>
+                    <div class="text-sm opacity-90">IA_ACCESS_KEY and IA_SECRET_KEY are not set. Downloads may fail for
+                        non-public items.</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="donation-alert" class="alert alert-modern alert-info alert-dismissible fade show d-none mb-4"
+            role="alert">
+            <div class="d-flex align-items-center gap-3">
+                <div class="alert-icon">💎</div>
+                <div>
+                    <span id="donation-message">You've downloaded 1GB from the Internet Archive!</span>
+                    <a href="https://archive.org/donate/" target="_blank" class="fw-bold ms-1 text-inherit">Donate Now
+                        →</a>
+                </div>
+            </div>
+            <button type="button" class="btn-close-custom" data-bs-dismiss="alert" aria-label="Close">×</button>
+        </div>
+
+        <!-- Single Column Layout -->
+        <div class="mx-auto" style="max-width: 800px;">
+
+            <!-- Input Card -->
+            <div class="card card-modern shadow-soft mb-4">
+                <div class="card-body p-4">
+                    <h2 class="h5 font-heading fw-bold mb-4">Start New Job</h2>
+
+                    <div class="mb-4">
+                        <label
+                            class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-2">Destination
+                            Directory</label>
+                        <div class="input-group input-group-modern">
+                            <input type="text" class="form-control font-monospace text-sm" id="destination"
+                                value="/downloads" placeholder="/downloads">
+                            <button class="btn btn-secondary-modern" type="button" id="browse-btn">Browse</button>
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <label
+                                class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-0">Identifiers
+                                / URLs</label>
+                            <span id="validate-status" class="text-xs fw-medium text-secondary">Ready to
+                                input</span>
+                        </div>
+                        <textarea class="form-control form-control-modern font-monospace" id="batch-input" rows="3"
+                            placeholder="https://archive.org/details/identifier&#10;another-identifier"></textarea>
+                    </div>
+
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-5">
+                            <label
+                                class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-2">Operation</label>
+                            <select class="form-select form-select-modern" id="operation">
+                                <option value="download" selected>Download Items</option>
+                                <option value="mirror">Mirror (Complete)</option>
+                                <option value="sync">Sync (Update)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-7 d-flex align-items-end">
+                            <div class="d-flex gap-4 mb-2">
+                                <div class="form-check form-check-modern">
+                                    <input class="form-check-input" type="checkbox" id="verify-checksums">
+                                    <label class="form-check-label text-sm" for="verify-checksums">Verify
+                                        Checksums</label>
+                                </div>
+                                <div class="form-check form-check-modern">
+                                    <input class="form-check-input" type="checkbox" id="dry-run">
+                                    <label class="form-check-label text-sm" for="dry-run">Dry Run</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Advanced Options (Collapsible) -->
+                    <div class="mb-4">
+                        <button
+                            class="btn btn-link btn-link-modern p-0 text-decoration-none text-sm fw-medium collapsed"
+                            type="button" data-bs-toggle="collapse" data-bs-target="#advanced-options">
+                            <span class="icon">›</span> Advanced Configuration
+                        </button>
+                        <div class="collapse mt-3 pt-3 border-top border-light-subtle" id="advanced-options">
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <label class="form-label text-xs text-secondary">Concurrency</label>
+                                    <input type="number" class="form-control form-control-sm form-control-modern"
+                                        id="concurrency" value="4" min="1" max="16">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label text-xs text-secondary">Max Speed (Mbps)</label>
+                                    <input type="text" class="form-control form-control-sm form-control-modern"
+                                        id="max-mbps" placeholder="Unlimited">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label text-xs text-secondary">File Pattern (Glob)</label>
+                                    <input type="text" class="form-control form-control-sm form-control-modern"
+                                        id="glob-pattern" value="*">
+                                </div>
+                                <div class="col-12 d-flex gap-4 mt-2">
+                                    <div class="form-check form-check-modern small">
+                                        <input class="form-check-input" type="checkbox" id="verify-only">
+                                        <label class="form-check-label" for="verify-only">Verify Only</label>
+                                    </div>
+                                    <div class="form-check form-check-modern small">
+                                        <input class="form-check-input" type="checkbox" id="collection-mode">
+                                        <label class="form-check-label" for="collection-mode">Collection
+                                            Mode</label>
+                                    </div>
+                                </div>
+                                <div class="col-12 mt-2">
+                                    <label class="form-label text-xs text-secondary">Log Level</label>
+                                    <div class="d-flex gap-2">
+                                        <div class="form-check form-check-inline form-check-modern">
+                                            <input class="form-check-input" type="radio" name="logLevel" id="log-info"
+                                                value="INFO" checked>
+                                            <label class="form-check-label text-xs" for="log-info">Info</label>
+                                        </div>
+                                        <div class="form-check form-check-inline form-check-modern">
+                                            <input class="form-check-input" type="radio" name="logLevel" id="log-debug"
+                                                value="DEBUG">
+                                            <label class="form-check-label text-xs" for="log-debug">Debug</label>
+                                        </div>
+                                    </div>
+                                    <!-- Hidden select for JS compatibility -->
+                                    <select id="log-level" class="d-none">
+                                        <option value="INFO">Info</option>
+                                        <option value="DEBUG">Debug</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="d-flex gap-2 pt-2">
+                        <button class="btn btn-primary-modern flex-grow-1" id="add-queue-btn">
+                            <span id="add-queue-text">Add to Queue</span>
+                        </button>
+                        <button class="btn btn-success-modern px-4" id="start-now-btn" style="display:none;">
+                            Start Processing
+                        </button>
+                        <button class="btn btn-danger-modern px-4" id="stop-btn" style="display:none;">
+                            Stop
+                        </button>
+                        <button class="btn btn-ghost" id="clear-btn">Clear</button>
+                    </div>
+                    <div id="action-status" aria-live="polite"></div>
+                </div>
+            </div>
+
+            <!-- Compact Active Job Card -->
+            <div class="card card-modern shadow-soft border-primary-subtle mb-4" id="status-section"
+                style="display:none;">
+                <div class="card-body p-3">
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="spinner-border text-primary spinner-border-sm" role="status" id="job-spinner"></div>
+                        <div class="flex-grow-1 min-w-0">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <h6 class="mb-0 font-heading fw-bold text-truncate text-sm" id="active-job-id">
+                                    Starting...</h6>
+                                <span class="text-xs font-monospace text-secondary" id="speed">0 MB/s</span>
+                            </div>
+                            <div class="progress progress-modern" style="height: 6px;">
+                                <div id="progress-bar" class="progress-bar bg-gradient-primary" role="progressbar"
+                                    style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                            </div>
+                            <div class="d-flex justify-content-between mt-1 text-xs text-secondary">
+                                <span id="files-count">0/0 files</span>
+                                <span id="bytes-and-eta">0 B • --:--</span>
+                            </div>
+                        </div>
+                        <span id="job-status-badge" class="badge badge-pill bg-primary">RUNNING</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- File Checklist Card -->
+            <div class="card card-modern shadow-soft mb-4" id="files-section"
+                style="display:none; max-height: 400px; overflow: hidden;">
+                <div
+                    class="card-header border-bottom border-light-subtle bg-transparent p-3 d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0 font-heading fw-bold text-sm">Transferring Files</h6>
+                </div>
+                <div class="card-body p-0 overflow-auto" style="max-height: 350px;">
+                    <ul class="list-group list-group-flush list-group-modern" id="file-list">
+                        <!-- Files inserted here -->
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Queue Section -->
+            <div class="card card-modern shadow-soft mb-4" id="queue-section" style="display:none;">
+                <div
+                    class="card-header border-bottom border-light-subtle bg-transparent p-3 d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0 font-heading fw-bold">Queue</h6>
+                    <span class="badge badge-pill badge-secondary" id="queue-count">0</span>
+                </div>
+                <div class="list-group list-group-flush list-group-modern" id="queue-list">
+                    <!-- Queue items -->
+                </div>
+            </div>
+
+            <!-- Logs Card -->
+            <div class="card card-modern shadow-soft mb-4" id="logs-section" style="display: none;">
+                <button
+                    class="btn btn-link w-100 text-start p-3 card-header bg-transparent border-0 d-flex justify-content-between align-items-center text-decoration-none collapsed"
+                    type="button" data-bs-toggle="collapse" data-bs-target="#logs-collapse" id="logs-toggle">
+                    <span class="font-heading fw-bold text-dark text-sm">Logs</span>
+                    <div class="d-flex text-xs text-secondary gap-2 align-items-center">
+                        <span class="badge bg-secondary-subtle text-dark border log-status">Hidden</span>
+                        <span class="icon-chevron">▼</span>
+                    </div>
+                </button>
+
+                <div class="collapse" id="logs-collapse">
+                    <div class="card-body p-0 d-flex flex-column" style="height: 300px;">
+                        <div
+                            class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom border-light-subtle bg-light-subtle">
+                            <div class="form-check form-switch form-check-sm">
+                                <input class="form-check-input" type="checkbox" id="auto-scroll" checked>
+                                <label class="form-check-label text-xs fw-medium" for="auto-scroll">Auto-scroll</label>
+                            </div>
+                            <button class="btn btn-xs btn-ghost text-secondary" id="download-logs-btn"
+                                title="Download Logs">
+                                <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                                    <path
+                                        d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z" />
+                                    <path
+                                        d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z" />
+                                </svg>
+                                Download
+                            </button>
+                        </div>
+                        <div class="logs-container flex-grow-1 p-3 font-monospace text-xs" id="logs-container"
+                            style="overflow-y: auto;">
+                            <div class="text-muted opacity-50">[System Ready]</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- History -->
+            <div class="card card-modern shadow-soft mb-4" id="history-card" style="display:none;">
+                <button
+                    class="btn btn-link w-100 text-start p-3 card-header bg-transparent border-0 d-flex justify-content-between align-items-center text-decoration-none collapsed"
+                    type="button" data-bs-toggle="collapse" data-bs-target="#history-section">
+                    <span class="font-heading fw-bold text-dark">Job History</span>
+                    <span class="badge badge-pill badge-light text-dark border" id="history-count">0</span>
+                </button>
+                <div class="collapse show" id="history-section">
+                    <div id="history-list" class="list-group list-group-flush list-group-modern">
+                        <!-- History items injected here -->
+                        <div class="text-muted text-center p-4 text-sm">No history yet</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script>
+        // JS Compatibility shim for the radio buttons -> hidden select update logic
+        document.querySelectorAll('input[name="logLevel"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                document.getElementById('log-level').value = e.target.value;
+            });
+        });
+    </script>
+</body>
+
+</html>
