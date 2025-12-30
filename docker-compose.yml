@@ -1,10 +1,18 @@
 services:
   ia-mirror:
+    container_name: ia-mirror-app
     build:
       context: docker
       dockerfile: Dockerfile
+    ports:
+      - "17865:17865"  # Web UI (http://localhost:17865)
     volumes:
-      - ./data:/data  # Mount host ./data to container /data for persistent storage
+      - ./downloads:/downloads  # Media files
+      - ./data:/data            # Database/Metadata
+    env_file:
+      - ./docker/example.env
+      - path: ./docker/live.env
+        required: false
     environment:
       # Required: Set your Internet Archive identifier (item or collection)
       - IA_IDENTIFIER=example_item  # Replace 'example_item' with your actual IA identifier
@@ -14,5 +22,7 @@ services:
       # - IA_GLOB=*  # Default: download all files; set to restrict (e.g., *.zip)
       # - IA_CONCURRENCY=5  # Parallel downloads
       # - IA_CHECKSUM=1  # Enable checksum verification
+      # - WEB_ENABLED=true  # Enable the web UI (default true)
+      # - WEB_PORT=17865   # Change if you need a different host port
     # The container will run with the above environment variables injected as CLI args
     # For real downloads, edit IA_DRY_RUN above or override with: docker-compose run --rm ia-mirror env IA_DRY_RUN=0

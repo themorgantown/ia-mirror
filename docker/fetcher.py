@@ -493,7 +493,25 @@ def _human_bytes(num: float) -> str:
         num /= 1024.0
     return f"{num:.1f}PB"
 
+_json_output = False
+
+def _print_json(event_type: str, data: dict = None):
+    payload = {"type": event_type, "timestamp": time.time()}
+    if data:
+        payload.update(data)
+    # Ensure flush so listener gets it immediately
+    print(json.dumps(payload), flush=True)
+
 def _print_progress(msg: str, idx: int, total: int, counter=[0]) -> None:
+    if _json_output:
+        # In JSON mode, we don't print the spinner text line.
+        # However, we still want to emit aggregate progress occasionally.
+        # But mostly, the individual file download loop handles granular progress.
+        # This function is called for general messages ("ignoring...", "already have...")
+        # We can treat these as log messages for now.
+        _print_json("log", {"message": msg})
+        return
+
     counter[0] = (counter[0] + 1) % len(_spinner_chars)
     spin = _spinner_chars[counter[0]]
     agg = _aggregate_progress_string()
@@ -526,11 +544,27 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
             return filename, True
 
     if local_path.exists() and verify_local_file(filename, local_path, manifest_entry, verify_mode):
-        _print_progress(f"✔ already have {filename}", idx, total)
+        if _json_output:
+            _print_json("file_end", {
+                "filename": filename,
+                "bytes_total": manifest_entry.get("size", 0),
+                "status": "skipped",
+                "message": "Already exists"
+            })
+        else:
+            _print_progress(f"✔ already have {filename}", idx, total)
         return filename, True
     # Fallback: accept files that exist under the nested identifier directory
     if alt_local_path.exists() and verify_local_file(filename, alt_local_path, manifest_entry, verify_mode):
-        _print_progress(f"✔ already have {identifier}/{filename}", idx, total)
+        if _json_output:
+            _print_json("file_end", {
+                "filename": filename,
+                "bytes_total": manifest_entry.get("size", 0),
+                "status": "skipped",
+                "message": "Already exists (alt path)"
+            })
+        else:
+            _print_progress(f"✔ already have {identifier}/{filename}", idx, total)
         return filename, True
     local_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -540,6 +574,12 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
     start = time.time()
     success = False
     
+    if _json_output:
+        _print_json("file_start", {
+            "filename": filename,
+            "bytes_total": manifest_entry.get("size", 0)
+        })
+
     # For the library call, we still use a boolean for checksum
     do_checksum = (verify_mode == "checksum")
     
@@ -552,7 +592,19 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
         
         def update_progress(current_size):
             _update_aggregate_bytes(tmp_path, current_size)
-            _print_progress(f"{filename[:40]:40} {_human_bytes(current_size)}", idx, total)
+            if _json_output:
+                 # Calculate simple speed for this file or just use global agg?
+                 # For simplicity, we emit just raw progress and let UI aggregate/smooth if needed
+                 # or we include global aggregate info.
+                 _print_json("progress", {
+                     "filename": filename,
+                     "bytes_done": current_size,
+                     "bytes_total": manifest_entry.get("size", 0),
+                     "speed": f"{_current_speed_mbps:.1f}MB/s", # Using global speed
+                     "eta": _eta_seconds
+                 })
+            else:
+                _print_progress(f"{filename[:40]:40} {_human_bytes(current_size)}", idx, total)
 
         # Custom throttled file wrapper that also updates progress
         class ProgressThrottledFile(ThrottledFile):
@@ -567,7 +619,7 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
                 self.current_size += n
                 now = time.time()
                 # Update progress display at most once per second
-                if now - self.last_update > 1.0:
+                if now - self.last_update > 0.5: # Faster updates for UI responsiveness? 0.5s is good
                     self.progress_cb(self.current_size)
                     self.last_update = now
                 return n
@@ -591,10 +643,21 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
             update_progress(tmp_path.stat().st_size)
             tmp_path.replace(local_path)
             _backoff_relax()
+            if _json_output:
+                 _print_json("file_end", {
+                    "filename": filename,
+                    "status": "success"
+                })
         else:
             if tmp_path.exists():
                 tmp_path.unlink()
             logging.error("Download failed for %s", filename)
+            if _json_output:
+                 _print_json("file_end", {
+                    "filename": filename, 
+                    "status": "failed",
+                    "error": "Download failed"
+                })
 
     except Exception as e:
         if 'tmp_path' in locals() and tmp_path.exists():
@@ -603,6 +666,12 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
         logging.error("Exception downloading %s: %s", filename, e)
         _backoff_register_event(str(e))
         success = False
+        if _json_output:
+             _print_json("file_end", {
+                "filename": filename, 
+                "status": "failed",
+                "error": str(e)
+            })
 
     return filename, success
 
@@ -797,6 +866,7 @@ def main():
     ap.add_argument("--source", help="Filter by source type: original, derivative, or metadata")
     ap.add_argument("--on-the-fly", action="store_true", help="Enable dynamic zip generation")
     ap.add_argument("--xml-names", action="store_true", help="Use filenames from metadata XML")
+    ap.add_argument("--json-output", action="store_true", help="Output progress events as JSON lines")
     ap.add_argument("--ignore-existing", action="store_true", help="Skip files if they exist without size/checksum check")
     ap.add_argument("--no-directories", action="store_true", help="Flatten download into a single directory")
     ap.add_argument("--sync", action="store_true", help="Advanced Sync: delete local files not present in remote IA item")
@@ -842,9 +912,9 @@ def main():
             args.identifier = os.getenv("IA_IDENTIFIER") or os.getenv("IA_ITEM_NAME") or None
         if not args.destdir:
             if args.identifier:
-                args.destdir = f"/data/{args.identifier}"
+                args.destdir = f"/downloads/{args.identifier}"
             else:
-                args.destdir = "/data/None"
+                args.destdir = "/downloads/None"
 
     if not args.identifier and not args.print_effective_config and not args.use_batch_source:
         ap.error("identifier required unless --print-effective-config")
@@ -890,7 +960,7 @@ def main():
             
             # Resolve destination for health check reporting
             item_dest_base = Path(dst).resolve()
-            if str(item_dest_base) == "/data":
+            if str(item_dest_base) == "/downloads":
                 item_dest = item_dest_base / src
             else:
                 item_dest = item_dest_base
@@ -961,13 +1031,13 @@ def main():
     # Resolve destination directory with sensible container defaults
     if args.destdir:
         dest_base = Path(args.destdir).resolve()
-        # Common pattern: IA_DESTDIR=/data should nest by identifier
-        if str(dest_base) == "/data" and args.identifier:
+        # Common pattern: IA_DESTDIR=/downloads should nest by identifier
+        if str(dest_base) == "/downloads" and args.identifier:
             dest = (dest_base / str(args.identifier)).resolve()
         else:
             dest = dest_base
     else:
-        dest = Path(f"/data/{args.identifier}").resolve()
+        dest = Path(f"/downloads/{args.identifier}").resolve()
     dest.mkdir(parents=True, exist_ok=True)
     init_logging(dest)
     if health_server:

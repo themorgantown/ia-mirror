@@ -14,7 +14,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Install required system packages (curl for diagnostics if needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl tini bash && \
+    ca-certificates curl tini bash gosu && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
@@ -30,11 +30,19 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 COPY fetcher.py entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 
-# Directories (owned by app)
-RUN mkdir -p /data && chown app:app /data
-VOLUME ["/data"]
+# Copy web UI
+COPY web /app/web
+COPY templates /app/templates
+COPY static /app/static
 
-USER app
+# Directories (owned by app)
+RUN mkdir -p /downloads /data && chown app:app /downloads /data
+VOLUME ["/downloads", "/data"]
+
+# Expose web UI port
+EXPOSE 8080
+
+# Labels for OCI / Docker Hub
 
 # Labels for OCI / Docker Hub
 LABEL org.opencontainers.image.title="ia-mirror" \
