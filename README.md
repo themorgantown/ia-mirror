@@ -23,9 +23,9 @@ Run the container, mounting a local directory for downloads and specifying the i
 
 ```
 docker run --rm \
-  -v "$PWD/mirror:/data" \
+  -v "$PWD/mirror:/downloads" \
   -e IA_IDENTIFIER=The_Babe_Ruth_Collection \
-  -e IA_DESTDIR=/data \
+  -e IA_DESTDIR=/downloads \
   -e IA_ACCESS_KEY=your_access_key_here \
   -e IA_SECRET_KEY=your_secret_key_here \
   themorgantown/ia-mirror:latest
@@ -53,37 +53,69 @@ No credentials needed for public-item dry runs (use --dry-run).
 
 ## Docker Compose (Recommended for Local Development)
 
-A `docker-compose.yml` is provided for easy local testing with sane defaults. It runs in dry-run mode by default to show what would be downloaded without actually fetching files.
+A `docker-compose.yml` is provided for easy local testing with sane defaults. It runs in dry-run mode by default to show what would be downloaded without actually fetching files. The Web UI is exposed on port 17865 by default.
 
 1. Edit `docker-compose.yml` and replace `example_item` with your actual IA identifier.
-2. Run: `docker-compose up`
-3. This will perform a dry-run download, showing estimates and what files would be fetched.
+2. (Optional) Create a `docker/live.env` file based on `docker/example.env` to manage your environment variables securely.
+3. Run: `docker-compose up`
+4. Open the Web UI at http://localhost:17865 to queue items and watch status.
+5. This will perform a dry-run download, showing estimates and what files would be fetched.
 
 To switch to a real download:
-- Edit `docker-compose.yml` and change `IA_DRY_RUN=1` to `IA_DRY_RUN=0` (or remove the line).
+- Edit `docker-compose.yml` or your `.env` file and change `IA_DRY_RUN=1` to `IA_DRY_RUN=0`.
 - Or run: `docker-compose run --rm ia-mirror env IA_DRY_RUN=0`
+
+### Environment Variables (.env)
+
+The container supports loading environment variables from a `.env` file. 
+- **`docker/example.env`**: A comprehensive template containing all supported variables and their descriptions.
+- **`docker/live.env`**: (Recommended) Create this file to store your actual credentials and local configuration. It is ignored by git to prevent accidental credential leaks.
+
+#### Setup and Usage
+1. **Copy the template**: `cp docker/example.env docker/live.env`
+2. **Configure**: Edit `docker/live.env` with your `IA_ACCESS_KEY`, `IA_SECRET_KEY`, and other preferences.
+3. **Run**: `docker-compose up` will automatically pick up these settings.
+
+#### Key Variables
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `IA_IDENTIFIER` | The IA item or collection ID to mirror | (Required) |
+| `IA_ACCESS_KEY` | Your Internet Archive S3 Access Key | (Optional) |
+| `IA_SECRET_KEY` | Your Internet Archive S3 Secret Key | (Optional) |
+| `IA_DRY_RUN` | Set to `1` to simulate downloads without fetching | `1` (in compose) |
+| `IA_CONCURRENCY` | Number of parallel downloads | `8` |
+| `IA_DESTDIR` | Root directory for downloads inside container | `/downloads` |
+| `WEB_ENABLED` | Enable the Web UI | `true` |
+
+For a full list of variables and detailed descriptions, see [docker/example.env](docker/example.env).
 
 Add credentials if needed (see QuickStart above).
 
 ## Examples:
 
-docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" themorgantown/ia-mirror:latest
+docker run --rm -v $(pwd)/mirror:/downloads -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/downloads" themorgantown/ia-mirror:latest
 
 ### With more parallel downloads
-docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_CONCURRENCY="10" themorgantown/ia-mirror:latest
+docker run --rm -v $(pwd)/mirror:/downloads -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/downloads" -e IA_CONCURRENCY="10" themorgantown/ia-mirror:latest
 
 ### Dry run to see what would be downloaded
-docker run --rm -v $(pwd)/mirror:/data -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/data" -e IA_DRY_RUN="true" themorgantown/ia-mirror:latest
+docker run --rm -v $(pwd)/mirror:/downloads -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/downloads" -e IA_DRY_RUN="true" themorgantown/ia-mirror:latest
 
 ### Verify-only (no downloads; checks local files)
-docker run --rm -v $(pwd)/mirror:/data themorgantown/ia-mirror:latest The_Babe_Ruth_Collection --destdir /data --verify-only
+docker run --rm -v $(pwd)/mirror:/downloads themorgantown/ia-mirror:latest The_Babe_Ruth_Collection --destdir /downloads --verify-only
+
+## Web UI (optional, enabled by default)
+- Default port: 17865 (change via `WEB_PORT`).
+- Compose example: `docker-compose up` then open http://localhost:17865.
+- Queue multiple IA identifiers, start/stop jobs, view live logs/history.
+- Mock runner available via `WEB_RUNNER=mock` for testing without network.
 
 ## Quick concepts
 - **Native Python API**: This utility uses the `internetarchive` Python library directly for downloads, providing better control over parallelism and error handling than the standard CLI.
 - **State Management**: It maintains a `.ia_status/` directory within the destination folder. This contains JSON files tracking `pending` and `done` files, allowing the tool to resume interrupted downloads perfectly.
 - **Metadata Caching**: To reduce API pressure on IA, the tool fetches item metadata once and stores it locally as a "manifest" in `.ia_status/metadata.json`. This manifest is used for all subsequent logic (filtering, estimation, and verification).
 - **Native Throttling**: Bandwidth capping uses a native Python implementation (Token Bucket algorithm), ensuring portability across all architectures (amd64/arm64) without external dependencies like `trickle`.
-- **Health Monitoring**: A minimal web server (default port 8080) exposes the current `report.json` in real-time, allowing for easy integration with monitoring tools.
+- **Health Monitoring**: A minimal web server (default port 8080) exposes the current `report.json` in real-time, allowing for easy integration with monitoring tools. The Web UI runs separately on port 17865 by default.
 - **Advanced Sync**: When enabled via `IA_SYNC`, the tool performs a true mirror by deleting local files that are no longer present in the remote IA item.
 
 # Development
@@ -148,15 +180,15 @@ docker run --rm \
 Note only source and destdir are required; other columns are optional:
   ```
   source,destdir,glob,exclude,format,concurrency,verify_mode
-  The_Babe_Ruth_Collection,/data/The_Babe_Ruth_Collection,*.mp3,,mp3,10,checksum
-  jillem-full-archive,/data/jillem-full-archive,,*_thumb.jpg,,5,size
+  The_Babe_Ruth_Collection,/downloads/The_Babe_Ruth_Collection,*.mp3,,mp3,10,checksum
+  jillem-full-archive,/downloads/jillem-full-archive,,*_thumb.jpg,,5,size
   ```
 
   Run the container with batch mode enabled (mount the CSV and set dest roots as needed):
 
   ```bash
   docker run --rm \
-    -v "$PWD/mirror:/data" \
+    -v "$PWD/mirror:/downloads" \
     -v "$PWD/batch_source.csv:/app/batch_source.csv:ro" \
     -e IA_ACCESS_KEY=AKXXX -e IA_SECRET_KEY=SKYYY \
     themorgantown/ia-mirror:latest --use-batch-source --batch-source-path /app/batch_source.csv
@@ -167,7 +199,7 @@ Recommended for production: use Docker secrets or your orchestration's secret me
 
 ## Config / ENV variables
 - IA_IDENTIFIER (required) — item or collection identifier
-- IA_DESTDIR — destination directory under /data (container resolves path)
+- IA_DESTDIR — destination directory under /downloads (container resolves path)
 - IA_GLOB (-g) — include glob; can be repeated or comma-separated (default `*`)
 - IA_EXCLUDE (-x) — exclude glob(s); can be repeated or comma-separated
 - IA_FORMAT (-f) — restrict to extensions (e.g., `mp3,flac`)
@@ -201,13 +233,19 @@ Recommended for production: use Docker secrets or your orchestration's secret me
 
  
 ## Files & outputs
-- Download destination: `/data/<identifier>` (unless `--destdir` provided)
-- Status dir: `/data/<identifier>/.ia_status/<identifier>.json`
-- Lockfile: `/data/<identifier>/.ia_status/lock.json` (auto-removed on exit)
-- Snapshot report: `/data/<identifier>/report.json`
-- Log file: `/data/<identifier>/ia_download.log` (also streamed to stdout)
+- Download destination: `/downloads/<identifier>` (unless `--destdir` provided)
+- Status dir: `/downloads/<identifier>/.ia_status/<identifier>.json`
+- Lockfile: `/downloads/<identifier>/.ia_status/lock.json` (auto-removed on exit)
+- Snapshot report: `/downloads/<identifier>/report.json`
+- Log file: `/downloads/<identifier>/ia_download.log` (also streamed to stdout)
 
-Note on `--destdir` layout: the underlying `ia` CLI writes files under `<destdir>/<identifier>/...`. When you set `IA_DESTDIR=/data`, this wrapper resolves the working directory to `/data/<identifier>` for logs/status, and instructs `ia` to write to `/data` so files land in `/data/<identifier>/...` (no double-nesting). Using the examples above will produce the expected layout.
+## Volume Layout
+
+The container uses two primary volumes:
+- **/downloads**: The destination for all downloaded content, logs, and job reports. Map this to a host directory with enough storage space.
+- **/data**: Stores persistent application state, specifically the SQLite database (`ui.db`) for the Web UI queue and history. Map this to a host directory to preserve your job history across container restarts.
+
+Note on `--destdir` layout: the underlying `ia` CLI writes files under `<destdir>/<identifier>/...`. When you set `IA_DESTDIR=/downloads`, this wrapper resolves the working directory to `/downloads/<identifier>` for logs/status, and instructs `ia` to write to `/downloads` so files land in `/downloads/<identifier>/...` (no double-nesting). Using the examples above will produce the expected layout.
 
 Report behavior:
 - `--dry-run` now writes a structured `report.json` summarizing totals and simulated ETA.
@@ -244,4 +282,19 @@ docker scout cves ia-mirror:local
 # Check for base image updates
 docker scout recommendations ia-mirror:local
 ```
+
+## Testing
+
+The project includes a consolidated test suite that runs:
+1. Python Unit Tests (backend logic)
+2. Command Line Integration Tests
+3. Web UI Integration Tests
+
+To run the full suite:
+
+```bash
+./tests/run_tests.sh
+```
+
+The script will automatically build a test Docker image and run all tests against it. Output is stored in `tests/test_output/`.
 
