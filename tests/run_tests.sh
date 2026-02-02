@@ -9,6 +9,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$SCRIPT_DIR"
 
+# Git Bash/MSYS on Windows will rewrite POSIX-looking paths (like /app) into
+# Windows host paths (like C:/Program Files/Git/app), which breaks Docker args
+# such as -w /app and volume destinations like :/downloads.
+UNAME_S="$(uname -s 2>/dev/null || true)"
+IS_GITBASH=0
+if [ -n "${MSYSTEM:-}" ] || [[ "$UNAME_S" == MINGW* ]] || [[ "$UNAME_S" == MSYS* ]]; then
+    IS_GITBASH=1
+fi
+
+host_path() {
+    if [ "$IS_GITBASH" -eq 1 ] && command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$1"
+    else
+        echo "$1"
+    fi
+}
+
+SCRIPT_DIR_HOST="$(host_path "$SCRIPT_DIR")"
+REPO_ROOT_HOST="$(host_path "$REPO_ROOT")"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -20,9 +40,110 @@ NC='\033[0m'
 OUTPUT_DIR="$SCRIPT_DIR/test_output"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR_HOST="$(host_path "$OUTPUT_DIR")"
+
+# Prefer python3 when available; fall back to python.
+PYTHON_BIN="python3"
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+fi
 
 # Docker image name
 IMAGE="${IMAGE:-ia-mirror:test}"
+
+# Wrap docker so container paths (/app, /downloads, etc) are not MSYS-converted.
+docker() {
+    if [ "$IS_GITBASH" -eq 1 ]; then
+        MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" command docker "$@"
+    else
+        command docker "$@"
+    fi
+}
+
+# timeout executes docker as a subprocess and bypasses the bash docker() wrapper.
+# Wrap timeout so Docker still receives unmodified container paths on Git Bash.
+timeout() {
+    local seconds="$1"
+    shift
+
+    local timeout_cmd=""
+    if command -v timeout >/dev/null 2>&1; then
+        timeout_cmd="timeout"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        timeout_cmd="gtimeout"
+    fi
+
+    if [ -z "$timeout_cmd" ]; then
+        if command -v python3 >/dev/null 2>&1; then
+            python3 - "$seconds" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+secs = int(float(sys.argv[1]))
+cmd = sys.argv[2:]
+
+try:
+    # Start in its own process group so we can terminate the full tree.
+    proc = subprocess.Popen(cmd, preexec_fn=os.setsid)
+    proc.wait(timeout=secs)
+    sys.exit(proc.returncode)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            pass
+    sys.exit(124)
+PY
+        elif command -v python >/dev/null 2>&1; then
+            python - "$seconds" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+secs = int(float(sys.argv[1]))
+cmd = sys.argv[2:]
+
+try:
+    proc = subprocess.Popen(cmd, preexec_fn=os.setsid)
+    proc.wait(timeout=secs)
+    sys.exit(proc.returncode)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            pass
+    sys.exit(124)
+PY
+        else
+            echo "WARN: No timeout/gtimeout/python available; running without timeout: $*" >&2
+            "$@"
+        fi
+        return
+    fi
+
+    if [ "$IS_GITBASH" -eq 1 ] && [ "${1:-}" = "docker" ]; then
+        MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" command "$timeout_cmd" "$seconds" "$@"
+    else
+        command "$timeout_cmd" "$seconds" "$@"
+    fi
+}
 
 # -----------------------------------------------------------------------------
 # 1. Build Docker Image
@@ -40,7 +161,7 @@ if [ -f "$REPO_ROOT/docker/live.env" ]; then
 fi
 
 echo -e "${BLUE}Building test image...${NC}"
-docker build -t "$IMAGE" -f "$REPO_ROOT/docker/Dockerfile" "$REPO_ROOT/docker/" > "$OUTPUT_DIR/build.log" 2>&1 || {
+docker build -t "$IMAGE" -f "$REPO_ROOT_HOST/docker/Dockerfile" "$REPO_ROOT_HOST/docker/" > "$OUTPUT_DIR/build.log" 2>&1 || {
     echo -e "${RED}Build failed. See $OUTPUT_DIR/build.log${NC}"
     exit 1
 }
@@ -53,7 +174,7 @@ echo -e "${BLUE}Running Python Unit Tests...${NC}"
 # We mount the tests directory into /app/tests so the container can access test_ui.py
 # We run from /app so that 'web' package is importable (it exists at /app/web in the image)
 if docker run --rm --entrypoint "" \
-    -v "$SCRIPT_DIR":/app/tests \
+    -v "$SCRIPT_DIR_HOST:/app/tests" \
     -w /app \
     "$IMAGE" pytest /app/tests/test_ui.py > "$OUTPUT_DIR/unit_tests.log" 2>&1; then
     echo -e "${GREEN}✓ Unit Tests PASS${NC}"
@@ -106,7 +227,7 @@ test_01_dry_run() {
     mkdir -p "$TEST_DIR"
     
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=listofearlyameri00fren \
         -e IA_DRY_RUN=1 \
         "$IMAGE" > "$OUTPUT_DIR/$ID.log" 2>&1 || true
@@ -126,7 +247,7 @@ test_02_estimate() {
     mkdir -p "$TEST_DIR"
 
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=listofearlyameri00fren \
         -e IA_ESTIMATE_ONLY=1 \
         "$IMAGE" > "$OUTPUT_DIR/$ID.log" 2>&1 || true
@@ -145,7 +266,7 @@ test_03_glob() {
     mkdir -p "$TEST_DIR"
 
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=listofearlyameri00fren \
         -e IA_GLOB="*.xml" \
         -e IA_DRY_RUN=1 \
@@ -165,7 +286,7 @@ test_04_exclude() {
     mkdir -p "$TEST_DIR"
 
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=listofearlyameri00fren \
         -e IA_EXCLUDE="*.txt,*.xml" \
         -e IA_DRY_RUN=1 \
@@ -185,7 +306,7 @@ test_05_format() {
     mkdir -p "$TEST_DIR"
 
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=listofearlyameri00fren \
         -e IA_FORMAT="pdf" \
         -e IA_DRY_RUN=1 \
@@ -222,16 +343,14 @@ test_07_batch() {
     local DESC="Batch mode dry-run"
     local TEST_DIR="$OUTPUT_DIR/$ID"
     mkdir -p "$TEST_DIR"
-    echo "source,destdir" > "$TEST_DIR/batch.csv"
-    echo "listofearlyameri00fren,/downloads/batch_test_1" >> "$TEST_DIR/batch.csv"
 
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
-        -v "$TEST_DIR/batch.csv:/app/batch_source.csv:ro" \
+        -v "$(host_path "$TEST_DIR"):/data" \
+        -v "${SCRIPT_DIR_HOST}/batch_source.csv:/app/batch_source.csv:ro" \
         -e IA_DRY_RUN=1 \
         "$IMAGE" --use-batch-source --batch-source-path /app/batch_source.csv > "$OUTPUT_DIR/$ID.log" 2>&1 || true
 
-    if grep -q "Batch mode: processing 1 rows" "$OUTPUT_DIR/$ID.log"; then
+    if grep -q "Batch mode: processing 2 rows" "$OUTPUT_DIR/$ID.log"; then
         record_result "$ID" "PASS" "$DESC"
     else
         record_result "$ID" "FAIL" "$DESC"
@@ -245,7 +364,7 @@ test_09_lock() {
     mkdir -p "$TEST_DIR"
 
     timeout 30 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=locktest \
         -e IA_DRY_RUN=1 \
         "$IMAGE" > "$OUTPUT_DIR/$ID.log" 2>&1 || true
@@ -280,7 +399,7 @@ test_16_source() {
     mkdir -p "$TEST_DIR"
 
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=synth_psr60 \
         -e IA_SOURCE=metadata \
         -e IA_DRY_RUN=1 \
@@ -304,7 +423,7 @@ test_17_ignore() {
     echo "fake content" > "$TARGET"
 
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=synth_psr60 \
         -e IA_IGNORE_EXISTING=1 \
         "$IMAGE" > "$OUTPUT_DIR/$ID.log" 2>&1 || true
@@ -324,7 +443,7 @@ test_18_nolock() {
     echo '{"pid": 99999}' > "$TEST_DIR/synth_psr60/.ia_status/lock.json"
 
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=synth_psr60 \
         -e IA_NO_LOCK=1 \
         -e IA_DRY_RUN=1 \
@@ -345,7 +464,7 @@ test_19_forcemeta() {
     echo "corrupt" > "$TEST_DIR/synth_psr60/.ia_status/metadata_synth_psr60.json"
 
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=synth_psr60 \
         -e IA_FORCE_METADATA_UPDATE=1 \
         -e IA_DRY_RUN=1 \
@@ -365,7 +484,7 @@ test_20_resumefolders() {
     mkdir -p "$TEST_DIR/synth_psr60/psr60"
     
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=synth_psr60 \
         -e IA_RESUMEFOLDERS=1 \
         -e IA_DRY_RUN=1 \
@@ -384,7 +503,7 @@ test_08_download_small() {
     local ID="test08"
     local DESC="Actual download (small)"
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$OUTPUT_DIR:/downloads" \
+        -v "$OUTPUT_DIR_HOST:/downloads" \
         -e IA_IDENTIFIER=listofearlyameri00fren \
         -e IA_GLOB="*_meta.xml" \
         -e IA_CONCURRENCY=1 \
@@ -404,7 +523,7 @@ test_12_throttle() {
     # AdventuresOfBabeRuth is 80MB, might be too big for quick test.
     # Let's use synth_psr60 which is small, but set limit very low (1Mbps)
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$OUTPUT_DIR:/downloads" \
+        -v "$OUTPUT_DIR_HOST:/downloads" \
         -e IA_IDENTIFIER=synth_psr60 \
         -e IA_MAX_MBPS=1 \
         "$IMAGE" > "$OUTPUT_DIR/$ID.log" 2>&1 || true
@@ -427,7 +546,7 @@ test_13_sync() {
     touch "$TEST_DIR/synth_psr60/orphan_file.txt"
     
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=synth_psr60 \
         -e IA_SYNC=1 \
         "$IMAGE" > "$OUTPUT_DIR/$ID.log" 2>&1 || true
@@ -447,7 +566,7 @@ test_14_checksum() {
     
     # First download clean
     docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=synth_psr60 \
         "$IMAGE" > /dev/null 2>&1 || true
         
@@ -457,7 +576,7 @@ test_14_checksum() {
         echo "garbage" > "$TARGET"
         
         timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-            -v "$TEST_DIR:/downloads" \
+            -v "$(host_path "$TEST_DIR"):/downloads" \
             -e IA_IDENTIFIER=synth_psr60 \
             -e IA_CHECKSUM=1 \
             "$IMAGE" > "$OUTPUT_DIR/$ID.log" 2>&1 || true
@@ -479,7 +598,7 @@ test_15_verify() {
     mkdir -p "$TEST_DIR"
 
     timeout 60 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
-        -v "$TEST_DIR:/downloads" \
+        -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=synth_psr60 \
         -e IA_VERIFY_ONLY=1 \
         "$IMAGE" > "$OUTPUT_DIR/$ID.log" 2>&1 || true
@@ -504,7 +623,7 @@ test_ui() {
     # Start container
     docker run -d --name "$CONTAINER_NAME" \
         -p 17866:17865 \
-        -v "$OUTPUT_DIR:/downloads" \
+        -v "$OUTPUT_DIR_HOST:/downloads" \
         -e WEB_ENABLED=true \
         -e WEB_PORT=17865 \
         -e WEB_RUNNER=mock \
@@ -559,17 +678,17 @@ test_ui() {
     # 4. Check Queue Length
     STATUS=$(curl -s http://localhost:17866/api/status)
     # Using python to parse json safely for test
-    QUEUE_LEN=$(echo "$STATUS" | python3 -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))")
+    QUEUE_LEN=$(echo "$STATUS" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))")
     if [ "$QUEUE_LEN" -lt 1 ]; then
         echo "FAIL: Queue length expected >= 1, got $QUEUE_LEN" >> "$LOG"
         FAILED=1
     fi
 
     # 4b. Test Removal
-    JOB_ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['job_ids'][0])")
+    JOB_ID=$(echo "$RESPONSE" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin)['job_ids'][0])")
     REMOVE_RESP=$(curl -s -X DELETE "http://localhost:17866/api/queue/$JOB_ID")
     STATUS_AFTER=$(curl -s http://localhost:17866/api/status)
-    Q_LEN_AFTER=$(echo "$STATUS_AFTER" | python3 -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))")
+    Q_LEN_AFTER=$(echo "$STATUS_AFTER" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))")
     if [ "$Q_LEN_AFTER" -ne 0 ]; then
         echo "FAIL: Queue item was not removed. Q_LEN: $Q_LEN_AFTER" >> "$LOG"
         FAILED=1
@@ -596,7 +715,7 @@ test_ui() {
     for i in {1..60}; do
         sleep 1
         STATUS=$(curl -s http://localhost:17866/api/status)
-        Q_LEN=$(echo "$STATUS" | python3 -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))")
+        Q_LEN=$(echo "$STATUS" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))")
         if [ "$Q_LEN" -eq 0 ]; then
             COMPLETED=1
             break
@@ -609,7 +728,7 @@ test_ui() {
 
     # 7. Check History
     JOBS=$(curl -s http://localhost:17866/api/jobs)
-    count=$(echo "$JOBS" | python3 -c "import sys, json; print(len([j for j in json.load(sys.stdin)['jobs'] if j['status'] in ['completed', 'failed']]))")
+    count=$(echo "$JOBS" | "$PYTHON_BIN" -c "import sys, json; print(len([j for j in json.load(sys.stdin)['jobs'] if j['status'] in ['completed', 'failed']]))")
     if [ "$count" -eq 0 ]; then
         echo "FAIL: No completed jobs in history" >> "$LOG"
         FAILED=1
