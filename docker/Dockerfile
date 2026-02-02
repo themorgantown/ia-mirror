@@ -1,5 +1,5 @@
 # Minimal MVP Dockerfile for IA mirror
-ARG IA_PYPI_VERSION="5.7.1"
+ARG IA_PYPI_VERSION="5.7.2"
 FROM python:3.14-slim AS base
 ARG IA_PYPI_VERSION
 
@@ -13,8 +13,14 @@ ENV PYTHONUNBUFFERED=1 \
     XDG_CONFIG_HOME=/home/app/.config
 
 # Install required system packages (curl for diagnostics if needed)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl tini bash gosu && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        tini \
+        bash \
+        gosu && \
+    apt-get install -y --only-upgrade openssl && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
