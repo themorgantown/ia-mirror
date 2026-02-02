@@ -83,6 +83,7 @@ class QueueWorker:
         job_id = job['id']
         identifier = job['identifier']
         config = job['config'] or {}
+        operation = job.get('operation', 'download')
         
         if isinstance(config, str):
             import json
@@ -99,7 +100,8 @@ class QueueWorker:
             job_id,
             identifier,
             destdir,
-            config
+            config,
+            operation
         )
         self.current_runner = runner
         

@@ -12,7 +12,7 @@ from pathlib import Path
 class JobRunner:
     """Base class for job runners."""
     
-    def __init__(self, job_id: int, identifier: str, destdir: str, config: Dict):
+    def __init__(self, job_id: int, identifier: str, destdir: str, config: Dict, operation: str = 'download'):
         """
         Initialize runner.
         
@@ -21,11 +21,13 @@ class JobRunner:
             identifier: IA identifier
             destdir: Destination directory in container
             config: Configuration dict
+            operation: Job operation type ('download', 'verify', etc.)
         """
         self.job_id = job_id
         self.identifier = identifier
         self.destdir = destdir
         self.config = config
+        self.operation = operation
         self.process = None
         self.pid = None
     
@@ -82,7 +84,11 @@ class RealJobRunner(JobRunner):
         if self.config.get('glob_pattern'):
             cmd.extend(['--glob', self.config['glob_pattern']])
             
-        if self.config.get('verify_checksums'):
+        # Checksum/Verify logic
+        # If operation is 'verify', we FORCE checksum verification.
+        if self.operation == 'verify':
+            cmd.append('--checksum')
+        elif self.config.get('verify_checksums'):
             cmd.append('--checksum')
             
         if self.config.get('verify_only'):
@@ -121,7 +127,7 @@ class RealJobRunner(JobRunner):
                             
                             if evt_type == 'log':
                                 on_log(data.get('message', ''))
-                            elif evt_type in ('progress', 'file_start', 'file_end'):
+                            elif evt_type in ('progress', 'file_start', 'file_end', 'dry_run_summary'):
                                 # Pass structured events up
                                 on_progress(data)
                             else:
@@ -152,8 +158,10 @@ class MockJobRunner(JobRunner):
         total_files = random.randint(10, 50)
         total_bytes = random.randint(100_000_000, 1_000_000_000)
         
-        on_log(f"[MOCK] Starting mock download: {self.identifier}")
-        on_log(f"[MOCK] Found {total_files} files")
+        op_prefix = "[VERIFY]" if self.operation == 'verify' else "[MOCK]"
+        
+        on_log(f"{op_prefix} Starting mock {self.operation}: {self.identifier}")
+        on_log(f"{op_prefix} Found {total_files} files")
         
         # Simulate download
         for i in range(total_files):
@@ -163,7 +171,7 @@ class MockJobRunner(JobRunner):
             speed = random.uniform(0.5, 3.0)
             eta = (total_bytes - bytes_done) / (speed * 1_000_000) if speed > 0 else 0
             
-            on_log(f"[MOCK] Downloading file {i+1}/{total_files}: mock_file_{i}.bin")
+            on_log(f"{op_prefix} Processing file {i+1}/{total_files}: mock_file_{i}.bin")
             on_progress({
                 'files_done': i + 1,
                 'files_total': total_files,
@@ -173,14 +181,14 @@ class MockJobRunner(JobRunner):
                 'eta': f"{int(eta//60)}:{int(eta%60):02d}"
             })
         
-        on_log(f"[MOCK] Download complete: {self.identifier}")
+        on_log(f"{op_prefix} {self.operation.capitalize()} complete: {self.identifier}")
         return 0
 
 
 def create_runner(runner_type: str, job_id: int, identifier: str, 
-                  destdir: str, config: Dict) -> JobRunner:
+                  destdir: str, config: Dict, operation: str = 'download') -> JobRunner:
     """Factory function to create appropriate runner."""
     if runner_type == 'mock':
-        return MockJobRunner(job_id, identifier, destdir, config)
+        return MockJobRunner(job_id, identifier, destdir, config, operation)
     else:  # real
-        return RealJobRunner(job_id, identifier, destdir, config)
+        return RealJobRunner(job_id, identifier, destdir, config, operation)

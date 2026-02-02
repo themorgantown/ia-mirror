@@ -102,6 +102,17 @@ class JobStorage:
                     can_stop BOOLEAN DEFAULT 1
                 )
             """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS watched_collections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    identifier TEXT NOT NULL UNIQUE,
+                    watch_type TEXT CHECK(watch_type IN ('new', 'future', 'all_future')) NOT NULL,
+                    interval_seconds INTEGER DEFAULT 86400,
+                    last_checked TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
             # Initialize worker_state if empty
             if conn.execute("SELECT COUNT(*) FROM worker_state").fetchone()[0] == 0:
@@ -269,3 +280,48 @@ class JobStorage:
         with self._get_conn() as conn:
             rows = conn.execute("SELECT key, value FROM ui_config").fetchall()
             return {row[0]: row[1] for row in rows}
+
+    # Watcher management
+    def add_watched_collection(self, identifier: str, watch_type: str, interval_seconds: int = 86400) -> int:
+        """Add a collection to watch."""
+        with self._get_conn() as conn:
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO watched_collections (identifier, watch_type, interval_seconds, last_checked)
+                    VALUES (?, ?, ?, NULL)
+                    """,
+                    (identifier, watch_type, interval_seconds)
+                )
+                return cursor.lastrowid
+            except sqlite3.IntegrityError:
+                # Already exists, update it
+                conn.execute(
+                    """
+                    UPDATE watched_collections 
+                    SET watch_type = ?, interval_seconds = ?
+                    WHERE identifier = ?
+                    """,
+                    (watch_type, interval_seconds, identifier)
+                )
+                row = conn.execute("SELECT id FROM watched_collections WHERE identifier = ?", (identifier,)).fetchone()
+                return row[0] if row else None
+
+    def get_watched_collections(self) -> List[Dict]:
+        """Get all watched collections."""
+        with self._get_conn() as conn:
+            rows = conn.execute("SELECT * FROM watched_collections ORDER BY created_at DESC").fetchall()
+            return [dict(row) for row in rows]
+
+    def remove_watched_collection(self, identifier: str):
+        """Remove a watched collection."""
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM watched_collections WHERE identifier = ?", (identifier,))
+
+    def update_watched_collection_last_checked(self, identifier: str):
+        """Update last_checked timestamp."""
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE watched_collections SET last_checked = CURRENT_TIMESTAMP WHERE identifier = ?",
+                (identifier,)
+            )

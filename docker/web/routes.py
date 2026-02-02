@@ -2,14 +2,16 @@
 
 import os
 import json
-from flask import request, jsonify, send_file, render_template
-from flask_socketio import emit
+from flask import request, jsonify, send_file, render_template, abort
 from flask_socketio import emit
 from .parsing import parse_batch_input, validate_destination
 from .metadata import fetch_metadata
+import shutil
+import mimetypes
 
 
-def register_routes(app, storage, worker, socketio):
+
+def register_routes(app, storage, worker, socketio, watcher=None):
     """Register all API routes."""
     
     def get_system_info():
@@ -92,6 +94,131 @@ def register_routes(app, storage, worker, socketio):
             return jsonify({'valid': True})
         except Exception as e:
             return jsonify({'valid': False, 'error': str(e)}), 400
+
+    # ============ File Browser ============
+
+    @app.route('/api/files/list', methods=['GET'])
+    def list_files():
+        """List files in a directory."""
+        path = request.args.get('path', '')
+        # Security check: Ensure path is within /downloads
+        # Normalize and ensure it starts with /downloads, but we treat 'path' as relative to /downloads unless it is absolute /downloads
+        
+        base_dir = os.path.abspath('/downloads')
+        
+        # If path is empty, listing root
+        if not path or path == '/':
+             req_path = base_dir
+        else:
+            # Prevent directory traversal
+            # Join base_dir with provided path (stripping leading slash to treat as relative)
+            safe_path = os.path.normpath(os.path.join(base_dir, path.lstrip('/')))
+            if not safe_path.startswith(base_dir):
+                return jsonify({'error': 'Access denied'}), 403
+            req_path = safe_path
+
+        if not os.path.exists(req_path):
+             return jsonify({'error': 'Path not found'}), 404
+        
+        if not os.path.isdir(req_path):
+             return jsonify({'error': 'Not a directory'}), 400
+
+        items = []
+        try:
+            with os.scandir(req_path) as it:
+                for entry in it:
+                    if entry.name.startswith('.'):
+                        continue
+                    
+                    stat = entry.stat()
+                    items.append({
+                        'name': entry.name,
+                        'path': os.path.join(path, entry.name).lstrip('/'),
+                        'type': 'directory' if entry.is_dir() else 'file',
+                        'size': stat.st_size,
+                        'mtime': stat.st_mtime
+                    })
+        except Exception as e:
+             return jsonify({'error': str(e)}), 500
+        
+        # Sort: directories first, then files
+        items.sort(key=lambda x: (x['type'] != 'directory', x['name'].lower()))
+        
+        return jsonify({
+            'path': path if path else '/',
+            'items': items
+        })
+
+    @app.route('/api/files/download', methods=['GET'])
+    def download_file():
+        """Download a file."""
+        path = request.args.get('path', '')
+        base_dir = os.path.abspath('/downloads')
+        safe_path = os.path.normpath(os.path.join(base_dir, path.lstrip('/')))
+        
+        if not safe_path.startswith(base_dir):
+            return jsonify({'error': 'Access denied'}), 403
+            
+        if not os.path.isfile(safe_path):
+             return jsonify({'error': 'File not found'}), 404
+             
+        return send_file(safe_path, as_attachment=True)
+
+    @app.route('/api/files/delete', methods=['POST'])
+    def delete_item():
+        """Delete a file or directory."""
+        data = request.json or {}
+        path = data.get('path')
+        if not path:
+             return jsonify({'error': 'Path required'}), 400
+             
+        base_dir = os.path.abspath('/downloads')
+        safe_path = os.path.normpath(os.path.join(base_dir, path.lstrip('/')))
+        
+        if not safe_path.startswith(base_dir):
+            return jsonify({'error': 'Access denied'}), 403
+            
+        if not os.path.exists(safe_path):
+             return jsonify({'error': 'Item not found'}), 404
+             
+        # Root protection (should be covered by startswith check, but safe_path could be exactly base_dir)
+        if safe_path == base_dir:
+             return jsonify({'error': 'Cannot delete root downloads directory'}), 403
+
+        try:
+            if os.path.isfile(safe_path) or os.path.islink(safe_path):
+                os.remove(safe_path)
+            elif os.path.isdir(safe_path):
+                shutil.rmtree(safe_path)
+        except Exception as e:
+             return jsonify({'error': str(e)}), 500
+             
+        return jsonify({'status': 'ok'})
+        
+    @app.route('/api/files/content', methods=['GET'])
+    def get_file_content():
+        """Get file content for preview (text)."""
+        path = request.args.get('path', '')
+        base_dir = os.path.abspath('/downloads')
+        safe_path = os.path.normpath(os.path.join(base_dir, path.lstrip('/')))
+        
+        if not safe_path.startswith(base_dir):
+            return jsonify({'error': 'Access denied'}), 403
+            
+        if not os.path.isfile(safe_path):
+             return jsonify({'error': 'File not found'}), 404
+             
+        # Check size limit (e.g. 1MB)
+        if os.path.getsize(safe_path) > 1024 * 1024:
+             return jsonify({'error': 'File too large to preview'}), 400
+             
+        try:
+             with open(safe_path, 'r', encoding='utf-8', errors='replace') as f:
+                 content = f.read()
+             return jsonify({'content': content})
+        except Exception as e:
+             return jsonify({'error': str(e)}), 500
+
     
     # ============ Status & History ============
     
@@ -240,13 +367,60 @@ def register_routes(app, storage, worker, socketio):
     
     @app.route('/api/job/start', methods=['POST'])
     def job_start():
-        """Start processing queue."""
-        state = storage.get_worker_state()
-        if state.get('is_processing_queue'):
-            return jsonify({'status': 'already_running'}), 400
+        """Start a job immediately with provided input."""
+        data = request.json or {}
         
+        # Check if already running
+        state = storage.get_worker_state()
+        if state.get('is_processing_queue') or state.get('active_job_id'):
+            return jsonify({'status': 'already_running', 'error': 'A job is already running'}), 400
+        
+        # New immediate execution mode: accept text input
+        text = data.get('text', '')
+        if text:
+            operation = data.get('operation', 'download')
+            config = data.get('config', {})
+            
+            # Parse identifiers
+            valid, invalid = parse_batch_input(text)
+            
+            if not valid:
+                return jsonify({'error': 'No valid identifiers found', 'invalid': invalid}), 400
+            
+            # Add jobs to queue
+            job_ids = []
+            for identifier in valid:
+                # Fetch metadata
+                meta = fetch_metadata(identifier)
+                
+                job_id = storage.add_job(
+                    identifier=identifier,
+                    input_original=identifier,
+                    operation=operation,
+                    config=config,
+                    title=meta.get('title'),
+                    creator=meta.get('creator'),
+                    thumbnail_url=meta.get('thumbnail_url')
+                )
+                job_ids.append(job_id)
+            
+            # Start processing
+            storage.update_worker_state(is_processing_queue=True)
+            
+            # Notify clients
+            socketio.emit('queue_update', {
+                'queue_length': len(storage.get_queued_jobs())
+            }, namespace='/')
+            
+            return jsonify({
+                'status': 'started',
+                'job_ids': job_ids,
+                'valid_count': len(valid),
+                'invalid': invalid
+            })
+        
+        # Legacy mode: start processing existing queue
         storage.update_worker_state(is_processing_queue=True)
-        # Worker thread will pick up next job
         return jsonify({'status': 'started'})
     
     @app.route('/api/job/stop', methods=['POST'])
@@ -310,6 +484,42 @@ def register_routes(app, storage, worker, socketio):
         else:
              return jsonify({'error': 'No lock file found'}), 404
     
+    # ============ Collection Watcher ============
+
+    @app.route('/api/watcher/collections', methods=['GET'])
+    def watcher_list():
+        """List watched collections."""
+        cols = storage.get_watched_collections()
+        return jsonify({'collections': cols})
+
+    @app.route('/api/watcher/collections', methods=['POST'])
+    def watcher_add():
+        """Add a collection to watch."""
+        data = request.json or {}
+        identifier = data.get('identifier')
+        watch_type = data.get('watch_type') # new, future, all_future
+        
+        if not identifier or not watch_type:
+            return jsonify({'error': 'Missing identifier or watch_type'}), 400
+            
+        # Optional: force trigger a check immediately?
+        # Or just let the loop pick it up.
+        
+        storage.add_watched_collection(identifier, watch_type)
+        
+        # Trigger check immediately in background if possible, or just wait.
+        # If we have the watcher instance, we can hint it?
+        # watcher.trigger_check(identifier) # If we implemented that.
+        # valid types: new, future, all_future
+        
+        return jsonify({'status': 'ok'})
+
+    @app.route('/api/watcher/collections/<identifier>', methods=['DELETE'])
+    def watcher_remove(identifier):
+        """stop watching a collection."""
+        storage.remove_watched_collection(identifier)
+        return jsonify({'status': 'ok'})
+
     # ============ WebSocket Events ============
     
     @socketio.on('connect', namespace='/')

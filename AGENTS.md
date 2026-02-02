@@ -17,7 +17,7 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
 - Lint Dockerfile: `hadolint docker/Dockerfile`
 - Run integration tests: `./tests/test_ia_mirror.sh`
 - Print config: `docker run --rm ia-mirror:local --print-effective-config`
-- Test run (dry): `docker run --rm -v "$PWD/mirror:/data" -e IA_IDENTIFIER=test-item -e IA_DRY_RUN=true ia-mirror:local`
+- Test run (dry): `docker run --rm -v "$PWD/mirror:/downloads" -e IA_IDENTIFIER=test-item -e IA_DRY_RUN=true ia-mirror:local`
 
 ### Git & Release Commands
 - Check status: `git status`
@@ -35,10 +35,10 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
 - **Secondary tools**: `python tools/` — analysis and ZIP processing utilities
 
 ### Data Flow & Outputs
-1) Downloads → `/data/<identifier>/`
-2) Status → `/data/<identifier>/.ia_status/<identifier>.json`
-3) Snapshot → `/data/<identifier>/report.json`
-4) Logs → `/data/<identifier>/ia_download.log` (also stdout)
+1) Downloads → `/downloads/<identifier>/`
+2) Status → `/downloads/<identifier>/.ia_status/<identifier>.json`
+3) Snapshot → `/downloads/<identifier>/report.json`
+4) Logs → `/downloads/<identifier>/ia_download.log` (also stdout)
 
 ## Versioning & Release Workflow
 
@@ -73,7 +73,7 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
 ### Local Development
 - **Build single-arch**: `docker build -t ia-mirror:local -f docker/Dockerfile docker`
 - **Multi-arch build**: `docker buildx build --platform linux/amd64,linux/arm64 -t themorgantown/ia-mirror:<ver> --push -f docker/Dockerfile docker`
-- **Test run**: `docker run --rm -v "$PWD/mirror:/data" -e IA_IDENTIFIER=some-item -e IA_ACCESS_KEY=xxx -e IA_SECRET_KEY=yyy ia-mirror:local`
+- **Test run**: `docker run --rm -v "$PWD/mirror:/downloads" -e IA_IDENTIFIER=some-item -e IA_ACCESS_KEY=xxx -e IA_SECRET_KEY=yyy ia-mirror:local`
 - **Collection mode**: Set `IA_COLLECTION=1`
 
 ## Project conventions
@@ -81,7 +81,7 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
   - booleans: `IA_DRY_RUN`, `IA_CHECKSUM`, `IA_VERIFY_ONLY`, `IA_COLLECTION`, ...
   - values: `IA_DESTDIR`, `IA_CONCURRENCY` (-j), `IA_GLOB`, `IA_MAX_MBPS`/`IA_MAX_Mbps`, `IA_ASSUMED_MBPS`/`IA_ASSUMED_Mbps`
   - prefer `IA_IDENTIFIER` (legacy: `IA_ITEM_NAME`)
-- Destdir layout: set `IA_DESTDIR=/data` to avoid double-nesting; wrapper aligns logs/status alongside the identifier
+- Destdir layout: set `IA_DESTDIR=/downloads` to avoid double-nesting; wrapper aligns logs/status alongside the identifier
 - Status persistence: `.ia_status` + `report.json`; graceful SIGTERM snapshot for resume
 
 ## Authentication patterns
@@ -90,7 +90,7 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
 - Docker secrets: mount `/run/secrets/ia.ini` and copy to config at start
 
 ## Key configuration
-- Volume mount: `/data`
+- Volume mount: `/downloads`
 - Required: `IA_IDENTIFIER` (or provide as CLI arg)
 - Common envs: `IA_CONCURRENCY`, `IA_DRY_RUN`, `IA_DESTDIR`, `IA_CHECKSUM`, `IA_LOG_LEVEL`, `IA_ACCESS_KEY`, `IA_SECRET_KEY`
 - Build arg: `IA_PYPI_VERSION` to pin the `internetarchive` version

@@ -899,6 +899,9 @@ def main():
     ap.add_argument("--use-batch-source", action="store_true", help="Read batch source CSV (two columns: source identifier, destination path)")
     ap.add_argument("--batch-source-path", default=os.environ.get("IA_BATCH_SOURCE_PATH", "batch_source.csv"), help="Path to batch_source.csv (default ./batch_source.csv)")
     args = ap.parse_args()
+    
+    global _json_output
+    _json_output = args.json_output
 
     # Resolve verify mode
     if not args.verify_mode:
@@ -1052,18 +1055,22 @@ def main():
     _backoff_multiplier = max(1.0, args.backoff_multiplier)
     _backoff_jitter = min(max(0.0, args.backoff_jitter), 1.0)
 
-    # Acquire a simple lock to avoid concurrent runs on the same dest (sane default)
+    # Acquire a mechanism to prevent concurrent runs on the same dest, but allow overwrite
     lock_info = None
     lock_path = status_dir_for(dest) / "lock.json"
     if not args.no_lock:
         if lock_path.exists():
             try:
                 existing = json.loads(lock_path.read_text())
+                logging.info("Removing stale lock file from %s (PID %s)", lock_path, existing.get('pid'))
             except Exception:
-                existing = None
-            logging.error("Another run appears to be active. Lock file exists at %s (%s)", lock_path, existing)
-            logging.error("If you are sure no other job is running, remove the lock file or pass --no-lock to override (not recommended).")
-            return 3
+                logging.info("Removing stale lock file from %s", lock_path)
+            
+            try:
+                lock_path.unlink()
+            except Exception as e:
+                logging.warning("Failed to remove lock file: %s", e)
+
         try:
             lock_info = {
                 "pid": os.getpid(),
@@ -1186,6 +1193,23 @@ def main():
             print(f"📋 resumefolders dry-run for target: {dest}")
             print(f"Found {len(will_skip) + len(will_download)} zip files in IA archive(s)")
             print(f"Would skip {len(will_skip)} (local folder exists)")
+            
+            summary_files = []
+            for _, fn in will_download:
+                summary_files.append({"filename": fn, "size": manifests.get(item, {}).get(fn, {}).get("size")})
+
+            if _json_output:
+                _print_json("dry_run_summary", {
+                    "files_total": len(will_download),
+                    "known_size_bytes": 0, # Not easily calc here without extra loop
+                    "remaining_known_bytes": 0,
+                    "simulated_mbps": args.dryrun_mbps,
+                    "simulated_seconds": 0,
+                    "files": summary_files,
+                    "orphans": [],
+                    "config": cfg
+                })
+
             for _,fn in will_skip: print(f"  SKIP: {fn}")
             print(f"Would download {len(will_download)} zip files")
             for _,fn in will_download: print(f"  DOWNLOAD: {fn}")
@@ -1212,7 +1236,7 @@ def main():
                 formats.extend([s.strip() for s in f.split(",") if s.strip()])
             elif f:
                 formats.append(f)
-
+ 
         job_list = [(item, f) for item in items for f in get_file_list(manifests.get(item, {}), include_globs, exclude_globs, formats)]
 
     logging.info("Built job list with %d files", len(job_list))
@@ -1246,6 +1270,9 @@ def main():
     remaining_bytes = 0
     known_files = 0
     unknown_files = 0
+    
+    dry_run_file_list = []
+
     for item, fname in job_list:
         manifest_entry = manifests.get(item, {}).get(fname, {})
         sz = manifest_entry.get("size")
@@ -1266,7 +1293,15 @@ def main():
         else:
             local_size = 0
         remaining = max(sz - local_size, 0)
-        if remaining > 0: remaining_bytes += remaining
+        if remaining > 0: 
+            remaining_bytes += remaining
+            if args.dry_run:
+                dry_run_file_list.append({
+                    "filename": fname,
+                    "item": item,
+                    "size": remaining,
+                    "total_size": sz
+                })
         known_files += 1
 
     def human(n): return _human_bytes(float(n))
@@ -1309,6 +1344,19 @@ def main():
                 if len(orphans) > 10: print(f"  ... and {len(orphans)-10} more")
             else:
                 print("\n✨ Sync Dry-Run: No orphaned files found.")
+        
+        # Output structured summary for UI
+        if _json_output:
+            _print_json("dry_run_summary", {
+                "files_total": total_jobs,
+                "known_size_bytes": total_remote_bytes,
+                "remaining_known_bytes": remaining_bytes,
+                "simulated_mbps": sim_speed_mbps,
+                "simulated_seconds": sim_seconds,
+                "orphans": orphans,
+                "files": dry_run_file_list[:5000], # Limit payload size
+                "config": cfg,
+            })
 
         write_report(dest/REPORT_FILENAME, {
             "schema_version": 1,

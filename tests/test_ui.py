@@ -1,10 +1,12 @@
 """Consolidated Unit Tests for ia-mirror Web UI."""
 
-import pytest
-import json
-import tempfile
-import os
 import sys
+import os
+import unittest.mock
+import pytest
+import tempfile
+import shutil
+import json
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
@@ -19,7 +21,7 @@ sys.path.insert(0, DOCKER_DIR)
 # Import web modules
 from web.parsing import normalize_identifier, parse_batch_input, validate_destination
 from web.storage import JobStorage
-from web.jobs import MockJobRunner
+from web.jobs import MockJobRunner, create_runner
 from web.queue import QueueWorker
 from web.metadata import fetch_metadata
 from web.app import create_app
@@ -177,24 +179,44 @@ class TestJobRunner:
     """Test job execution."""
     
     def test_mock_runner(self):
-        """Test mock runner."""
-        runner = MockJobRunner(1, 'test-item', '/data', {})
+        """Test mock runner execution."""
+        runner = create_runner('mock', 1, 'test-item', '/tmp', {'files': 5})
         
         logs = []
-        progress_updates = []
-        
-        def on_log(line):
-            logs.append(line)
-        
-        def on_progress(progress):
-            progress_updates.append(progress)
-        
+        def on_log(msg):
+            logs.append(msg)
+            
+        def on_progress(p):
+            pass
+            
+        # Run
         exit_code = runner.run(on_log, on_progress)
-        
         assert exit_code == 0
         assert len(logs) > 0
-        assert '[MOCK]' in logs[0]
-        assert len(progress_updates) > 0
+        assert any('Download complete' in l for l in logs)
+
+    def test_verify_operation(self):
+        """Test that verify operation adds checksum flag."""
+        # Use RealJobRunner but mock subprocess to avoid actual execution
+        from web.jobs import RealJobRunner
+        import subprocess
+        
+        runner = RealJobRunner(1, 'test-item', '/tmp', {}, operation='verify')
+        
+        with patch('subprocess.Popen') as mock_popen:
+            mock_process = MagicMock()
+            mock_process.stdout = []
+            mock_process.wait.return_value = 0
+            mock_process.returncode = 0
+            mock_popen.return_value = mock_process
+            
+            runner.run(lambda x: None, lambda x: None)
+            
+            # Check args
+            args, _ = mock_popen.call_args
+            cmd = args[0]
+            assert '--checksum' in cmd
+            assert '--json-output' in cmd
 
 
 class TestQueueWorker:

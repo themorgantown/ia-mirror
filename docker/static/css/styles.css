@@ -337,7 +337,7 @@ h1, h2, h3, h4, h5, h6, .font-heading {
 /* Logs */
 .logs-container {
     background-color: #0b1120;
-    color: #e2e8f0;
+    color: #e2e8f0; /* Explicit light color */
     border-radius: 0 0 var(--radius-xl) var(--radius-xl);
     overflow-y: auto;
     font-size: 0.8rem;

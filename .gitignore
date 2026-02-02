@@ -25,3 +25,5 @@ live.env
 data/*
 downloads/
 test_results.txt
+future.md
+ui-plan.md

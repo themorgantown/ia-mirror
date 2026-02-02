@@ -9,6 +9,7 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from .storage import JobStorage
 from .queue import QueueWorker
+from .watcher import WatcherService
 from .parsing import parse_batch_input, validate_destination
 
 
@@ -30,6 +31,9 @@ def create_app(config=None):
     
     # Initialize queue worker
     worker = QueueWorker(storage, runner_type=runner_type)
+    
+    # Initialize watcher
+    watcher = WatcherService(storage)
     
     # Initialize SocketIO
     socketio = SocketIO(app, cors_allowed_origins="*")
@@ -76,13 +80,17 @@ def create_app(config=None):
     # Start worker
     worker.start()
     
+    # Start watcher
+    watcher.start()
+    
     # Store references in app context
     app.storage = storage
     app.worker = worker
+    app.watcher = watcher
     
     # Register blueprints and routes
     from . import routes
-    routes.register_routes(app, storage, worker, socketio)
+    routes.register_routes(app, storage, worker, socketio, watcher)
     
     return app, socketio
 
