@@ -18,6 +18,8 @@ services:
       - IA_IDENTIFIER=example_item  # Replace 'example_item' with your actual IA identifier
       # Dry run by default: Shows what would be downloaded without actually fetching
       - IA_DRY_RUN=1  # Set to 0 or remove this line to perform a real download
+      # Optional: append your app name/version to the Internet Archive User-Agent (internetarchive >= 5.7.2)
+      - IA_USER_AGENT_SUFFIX=ia-archive-docker
       # Optional: Add other environment variables as needed (see docker/example.env for full list)
       # - IA_GLOB=*  # Default: download all files; set to restrict (e.g., *.zip)
       # - IA_CONCURRENCY=5  # Parallel downloads

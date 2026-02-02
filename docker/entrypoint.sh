@@ -16,6 +16,60 @@ EOF
   fi
 fi
 
+# Optional: append a custom User-Agent suffix for all IA requests.
+# Requires internetarchive >= 5.7.2.
+# This preserves the default internetarchive User-Agent (including access key) and appends the suffix.
+if [[ -n "${IA_USER_AGENT_SUFFIX:-}" ]]; then
+    mkdir -p "$CONFIG_DIR"
+    IA_INI="$CONFIG_DIR/ia.ini"
+
+    # Ensure the config exists so we can add the [general] setting.
+    if [[ ! -f "$IA_INI" ]]; then
+        : > "$IA_INI"
+    fi
+
+    # If the file isn't writable (e.g., user mounted it read-only), warn and continue.
+    if [[ ! -w "$IA_INI" ]]; then
+        echo "Warning: cannot write $IA_INI to set user_agent_suffix (is it mounted read-only?)" >&2
+    else
+        TMP_INI="$(mktemp)"
+        awk -v val="$IA_USER_AGENT_SUFFIX" '
+            BEGIN { in_general=0; saw_general=0; wrote=0 }
+            /^\[general\][[:space:]]*$/ {
+                saw_general=1; in_general=1; print; next
+            }
+            /^\[[^]]+\]/ {
+                if (in_general && !wrote) { print "user_agent_suffix = " val; wrote=1 }
+                in_general=0
+                print
+                next
+            }
+            {
+                if (in_general && $0 ~ /^[[:space:]]*user_agent_suffix[[:space:]]*=/) {
+                    print "user_agent_suffix = " val
+                    wrote=1
+                    next
+                }
+                print
+            }
+            END {
+                if (in_general && !wrote) {
+                    print "user_agent_suffix = " val
+                    wrote=1
+                }
+                if (!saw_general) {
+                    print ""
+                    print "[general]"
+                    print "user_agent_suffix = " val
+                }
+            }
+        ' "$IA_INI" > "$TMP_INI"
+        mv "$TMP_INI" "$IA_INI"
+        chown -R app:app "$CONFIG_DIR" || true
+        chmod 600 "$IA_INI" || true
+    fi
+fi
+
 # ----------------- PUID/PGID Handling for Unraid/LinuxServer compatibility -----------------
 # Default to 1000 if not set
 PUID=${PUID:-1000}
