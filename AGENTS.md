@@ -15,7 +15,7 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
 ### Development Commands
 - Syntax check: `python -m py_compile docker/fetcher.py`
 - Lint Dockerfile: `hadolint docker/Dockerfile`
-- Run integration tests: `./tests/test_ia_mirror.sh`
+- Run integration tests: `./tests/run_tests.sh`
 - Print config: `docker run --rm ia-mirror:local --print-effective-config`
 - Test run (dry): `docker run --rm -v "$PWD/mirror:/downloads" -e IA_IDENTIFIER=test-item -e IA_DRY_RUN=true ia-mirror:local`
 
@@ -30,7 +30,7 @@ ia-mirror is a Docker-first Internet Archive mirroring utility. The primary deli
   - `entrypoint.sh` — credential setup and process exec
   - `Dockerfile` — Python slim base, non-root user (app:1000), tini init
 - **Testing**: `tests/`
-  - `test_ia_mirror.sh` — Comprehensive integration test suite (requires Docker)
+  - `run_tests.sh` — Comprehensive integration test suite (requires Docker)
   - `batch_source.csv` — Example/test batch configuration
 - **Secondary tools**: `python tools/` — analysis and ZIP processing utilities
 
@@ -141,7 +141,7 @@ docker run --rm \
 - `docker/fetcher.py` — Main Python wrapper script
 - `docker/entrypoint.sh` — Container initialization and credential setup  
 - `docker/Dockerfile` — Container build definition
-- `tests/test_ia_mirror.sh` — Integration test suite
+- `tests/run_tests.sh` — Integration test suite
 - `docker/example.env` — Environment variable template
 - `.github/workflows/release-buildx.yml` — CI/CD pipeline
 - `python tools/` — Analysis utilities (optional)
@@ -163,7 +163,7 @@ docker run --rm \
 - Review `.dockerignore` to prevent secret leaks
 
 ## Testing Patterns
-- **Integration Suite**: Run `./tests/test_ia_mirror.sh` for a full battery of tests (dry-run, sync, checksum, etc.)
+- **Integration Suite**: Run `./tests/run_tests.sh` for a full battery of tests (dry-run, sync, checksum, UI, etc.)
 - **Dry run**: Always test with `IA_DRY_RUN=true` first
 - **Small items**: Use test items for development
 - **Volume mounts**: Test both read-only and read-write scenarios  
@@ -196,4 +196,3 @@ Use `/permissions` command in Claude to allow these tools:
 - `hub.docker.com` — Docker Hub registry
 - `archive.org` — Internet Archive API docs
 - `pypi.org` — Python package documentation
-

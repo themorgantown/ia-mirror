@@ -36,19 +36,20 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 COPY fetcher.py entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
 
-# Copy web UI
+# Copy the rest of the application
 COPY web /app/web
 COPY templates /app/templates
 COPY static /app/static
 
-# Directories (owned by app)
+# Create directories and set permissions
 RUN mkdir -p /downloads /data && chown app:app /downloads /data
-VOLUME ["/downloads", "/data"]
 
-# Expose web UI port
-EXPOSE 8080
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:17865/api/status || exit 1
 
-# Labels for OCI / Docker Hub
+# Expose port
+EXPOSE 17865
 
 # Labels for OCI / Docker Hub
 LABEL org.opencontainers.image.title="ia-mirror" \
@@ -60,6 +61,3 @@ LABEL org.opencontainers.image.title="ia-mirror" \
     org.opencontainers.image.authors="Daniel Morgan"
 
 ENTRYPOINT ["/usr/bin/tini","--","/app/entrypoint.sh"]
-
-HEALTHCHECK --interval=1m --timeout=10s --start-period=1m --retries=3 \
-    CMD ["/usr/local/bin/python", "/app/fetcher.py", "--print-effective-config"]

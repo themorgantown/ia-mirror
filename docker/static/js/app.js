@@ -5,27 +5,56 @@ class IAMirrorUI {
     constructor() {
         this.socket = io();
         this.currentJob = null;
-        this.queue = [];
-        this.logBuffer = [];
         this.isRunning = false;
         this.speedSamples = [];
         this.bytesSamples = [];
         this.totalBytesDownloaded = 0;
-        this.donationMilestones = [
-            { bytes: 1024 * 1024 * 1024, label: '1GB', shown: false },
-            { bytes: 10 * 1024 * 1024 * 1024, label: '10GB', shown: false },
-            { bytes: 100 * 1024 * 1024 * 1024, label: '100GB', shown: false },
-            { bytes: 1024 * 1024 * 1024 * 1024, label: '1TB', shown: false }
-        ];
-        this.filesMap = new Map();
         this.currentJobId = null;
+        this.defaultDestination = '/downloads';
+        this.liveProgress = {
+            status: 'idle',
+            filesDone: 0,
+            filesTotal: null,
+            downloadedBytesCompleted: 0,
+            currentFileBytesDone: 0,
+            currentFileBytesTotal: 0,
+            totalKnownBytes: null,
+            remainingBytesEstimate: null,
+            etaSeconds: null,
+            speedMBps: 0,
+            speedText: '0 MB/s'
+        };
 
         this.setupEventListeners();
         this.setupSocketListeners();
-        this.setupTabListeners();
+        this.setupLogViewer();
+        this.requestNotificationPermission();
+        this.loadDestinationHint();
+        this.loadRecentDownloads();
         this.loadStatus();
-        this.updateQueueUI();
+        this.updateDestinationPath();
+        this.updateAsciiConsole();
         // Load watcher data if tab is active (or just pre-load)
+    }
+    
+    async requestNotificationPermission() {
+        if ("Notification" in window && Notification.permission !== "granted" && Notification.permission !== "denied") {
+            try {
+                await Notification.requestPermission();
+            } catch (e) {
+                console.warn("Notification permission request failed", e);
+            }
+        }
+    }
+
+    sendNotification(title, options) {
+        if ("Notification" in window && Notification.permission === "granted") {
+            try {
+                new Notification(title, options);
+            } catch (e) {
+                console.warn("Notification failed", e);
+            }
+        }
     }
 
     setupEventListeners() {
@@ -34,26 +63,17 @@ class IAMirrorUI {
         batchInput?.addEventListener('change', () => this.validateBatchInput());
         batchInput?.addEventListener('blur', () => this.validateBatchInput());
         batchInput?.addEventListener('input', () => this.validateBatchInput()); // Add input listener for realtime feedback
+        batchInput?.addEventListener('input', () => this.updateDestinationPath());
 
         // Buttons
         document.getElementById('start-download-btn')?.addEventListener('click', () => this.startDownload());
         document.getElementById('stop-job-btn')?.addEventListener('click', () => this.stopJob());
         document.getElementById('clear-btn')?.addEventListener('click', () => this.clearInput());
-        document.getElementById('download-logs-btn')?.addEventListener('click', () => this.downloadLogs());
-        document.getElementById('browse-btn')?.addEventListener('click', () => this.browseDest());
 
-        // Watch buttons
-        document.getElementById('watch-new-btn')?.addEventListener('click', (e) => { e.preventDefault(); this.addWatcher('new'); });
-        document.getElementById('watch-future-btn')?.addEventListener('click', (e) => { e.preventDefault(); this.addWatcher('future'); });
-        document.getElementById('watch-all-btn')?.addEventListener('click', (e) => { e.preventDefault(); this.addWatcher('all_future'); });
-
-        // Watching refresher
-        document.getElementById('refresh-watching-btn')?.addEventListener('click', () => this.loadUnknownCollections());
-
-        // Auto-scroll
-        document.getElementById('auto-scroll')?.addEventListener('change', (e) => {
-            if (e.target.checked) this.scrollToBottom();
-        });
+        // Settings Modal
+        document.getElementById('settings-btn')?.addEventListener('click', () => this.openSettings());
+        document.getElementById('save-settings-btn')?.addEventListener('click', () => this.saveSettings());
+        document.getElementById('clear-history-btn')?.addEventListener('click', () => this.clearHistory());
     }
 
     setupSocketListeners() {
@@ -72,46 +92,62 @@ class IAMirrorUI {
             this.handleJobUpdate(data);
         });
 
-        this.socket.on('queue_update', (data) => {
-            console.log('Queue update:', data);
-            this.updateQueueUI();
-        });
-
-        this.socket.on('log_line', (data) => {
-            console.log('Log line:', data);
-            this.addLogLine(data.job_id, data.line);
-        });
-
         this.socket.on('job_progress', (data) => {
             console.log('Progress:', data);
             this.updateProgress(data.progress);
         });
     }
 
-    setupTabListeners() {
-        document.querySelectorAll('.nav-link[data-tab]').forEach(link => {
-            link.addEventListener('click', (e) => {
-                e.preventDefault();
-                // Deactivate all
-                document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-                document.querySelectorAll('.view-section').forEach(s => s.style.display = 'none');
-
-                // Activate clicked
-                e.target.classList.add('active');
-                const tabId = e.target.getAttribute('data-tab');
-                const view = document.getElementById(`view-${tabId}`);
-                if (view) view.style.display = 'block';
-
-                // Load data for specific tabs
-                if (tabId === 'files') {
-                    // Refresh file browser?
-                }
-                if (tabId === 'watching') {
-                    this.loadWatchedCollections();
-                }
-            });
-        });
+    setupLogViewer() {
+        const btn = document.getElementById('view-log-btn');
+        if (btn) {
+            btn.addEventListener('click', () => this.showLogModal());
+        }
+        
+        const refreshBtn = document.getElementById('refresh-log-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => this.refreshLog());
+        }
     }
+
+    async showLogModal() {
+        if (!this.currentJob) return;
+        
+        const logModalEl = document.getElementById('logModal');
+        if (!logModalEl) return;
+        
+        const modal = new bootstrap.Modal(logModalEl);
+        modal.show();
+        
+        document.getElementById('log-modal-title').textContent = `Log: ${this.currentJob.identifier}`;
+        this.refreshLog();
+    }
+    
+    async refreshLog() {
+        if (!this.currentJob) return;
+        
+        const contentEl = document.getElementById('log-content');
+        if (!contentEl) return;
+        
+        // Only show loading on first load or manual refresh, not polling if we add that later
+        if (!contentEl.textContent) contentEl.textContent = 'Loading...';
+        
+        try {
+            const response = await fetch(`/api/jobs/${this.currentJob.id}/log?format=json`);
+            if (response.ok) {
+                const data = await response.json();
+                contentEl.textContent = data.content || 'No log content available.';
+                // Scroll to bottom
+                contentEl.parentElement.scrollTop = contentEl.parentElement.scrollHeight;
+            } else {
+                contentEl.textContent = 'Failed to load log. (Log file might not exist yet)';
+            }
+        } catch (e) {
+            console.error(e);
+            contentEl.textContent = 'Error loading log.';
+        }
+    }
+
 
     // ============ Batch Input & Validation ============
 
@@ -179,10 +215,75 @@ class IAMirrorUI {
         this.validateBatchInput();
     }
 
+    async openSettings() {
+        const modal = new bootstrap.Modal(document.getElementById('settingsModal'));
+        
+        try {
+            const response = await fetch('/api/config');
+            if (response.ok) {
+                const config = await response.json();
+                document.getElementById('settings-access-key').value = config.ia_access_key || '';
+                document.getElementById('settings-secret-key').value = config.ia_secret_key || '';
+                document.getElementById('settings-concurrency').value = config.concurrency || 4;
+            }
+        } catch (e) {
+            console.error('Failed to load config:', e);
+        }
+        
+        modal.show();
+    }
+
+    async saveSettings() {
+        const config = {
+            ia_access_key: document.getElementById('settings-access-key').value,
+            ia_secret_key: document.getElementById('settings-secret-key').value,
+            concurrency: parseInt(document.getElementById('settings-concurrency').value)
+        };
+
+        try {
+            const response = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            });
+
+            if (response.ok) {
+                const modalEl = document.getElementById('settingsModal');
+                const modal = bootstrap.Modal.getInstance(modalEl);
+                modal.hide();
+                this.setActionStatus('Global settings saved.', 'success');
+            } else {
+                this.setActionStatus('Failed to save settings.', 'danger');
+            }
+        } catch (e) {
+            console.error('Save failed:', e);
+            this.setActionStatus('Error saving settings.', 'danger');
+        }
+    }
+
+    async clearHistory() {
+        if (!confirm('Are you sure you want to clear all job history? This cannot be undone.')) return;
+
+        try {
+            const response = await fetch('/api/maintenance/clear-history', { method: 'POST' });
+            if (response.ok) {
+                this.setActionStatus('History cleared.', 'success');
+                const modalEl = document.getElementById('settingsModal');
+                const modal = bootstrap.Modal.getInstance(modalEl);
+                modal.hide();
+            } else {
+                this.setActionStatus('Failed to clear history.', 'danger');
+            }
+        } catch (e) {
+            console.error('Clear failed:', e);
+            this.setActionStatus('Error clearing history.', 'danger');
+        }
+    }
+
     getConfig() {
         // Collect config options
         return {
-            destdir: document.getElementById('destination')?.value || '/downloads',
+            destdir: this.defaultDestination || '/downloads',
             verify_checksum: document.getElementById('verify-checksums')?.checked,
             dry_run: document.getElementById('dry-run')?.checked,
             concurrency: parseInt(document.getElementById('concurrency')?.value) || 4,
@@ -227,12 +328,17 @@ class IAMirrorUI {
 
             if (response.ok) {
                 const extra = data.invalid && data.invalid.length > 0 ? ` (${data.invalid.length} invalid)` : '';
-                this.setActionStatus(`Started ${data.valid_count} job(s)${extra}`, 'success');
+                const statusPrefix = data.status === 'queued' ? 'Queued' : 'Started';
+                this.setActionStatus(`${statusPrefix} ${data.valid_count} job(s)${extra}`, 'success');
+                this.resetLiveProgress(data.status === 'queued' ? 'queued' : 'running');
+                this.updateDestinationPath();
                 this.clearInput();
                 this.isRunning = true;
+                await this.loadStatus();
                 this.updateUIState();
             } else {
                 this.setActionStatus(data.error || 'Error starting download.', 'danger');
+                await this.loadStatus();
                 if (startBtn) {
                     startBtn.disabled = false;
                     startBtn.innerHTML = '<svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16" class="me-2"><path d="M10.804 8L5 4.633v6.734L10.804 8z"/></svg>Start Download';
@@ -241,116 +347,12 @@ class IAMirrorUI {
         } catch (error) {
             console.error('Error:', error);
             this.setActionStatus('Network error while starting download.', 'danger');
+            await this.loadStatus();
             const startBtn = document.getElementById('start-download-btn');
             if (startBtn) {
                 startBtn.disabled = false;
                 startBtn.innerHTML = '<svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16" class="me-2"><path d="M10.804 8L5 4.633v6.734L10.804 8z"/></svg>Start Download';
             }
-        }
-    }
-
-    async addWatcher(type) {
-        const ids = this.getIdentifiersFromInput();
-        if (ids.length === 0) {
-            this.setActionStatus('Enter a valid identifier to watch.', 'warning');
-            return;
-        }
-
-        // We only support one at a time for simplicity in status message, or loop?
-        // Loop is fine.
-        let successCount = 0;
-        let failCount = 0;
-
-        for (const id of ids) {
-            try {
-                const response = await fetch('/api/watcher/collections', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        identifier: id,
-                        watch_type: type
-                    })
-                });
-
-                if (response.ok) {
-                    successCount++;
-                } else {
-                    failCount++;
-                }
-            } catch (e) {
-                console.error(e);
-                failCount++;
-            }
-        }
-
-        if (successCount > 0) {
-            this.setActionStatus(`Started watching ${successCount} collection(s).`, 'success');
-            this.clearInput();
-            // If watching tab is active, refresh it
-            if (document.querySelector('.nav-link[data-tab="watching"].active')) {
-                this.loadWatchedCollections();
-            }
-            // Auto switch to watching tab? Maybe not.
-        } else {
-            this.setActionStatus('Failed to add watcher.', 'danger');
-        }
-    }
-
-    async loadWatchedCollections() {
-        const list = document.getElementById('watching-list');
-        if (!list) return;
-
-        try {
-            list.innerHTML = '<div class="text-muted text-center p-5 text-sm">Loading...</div>';
-            const response = await fetch('/api/watcher/collections');
-            const data = await response.json();
-
-            if (data.collections.length === 0) {
-                list.innerHTML = '<div class="text-muted text-center p-5 text-sm">No collections are being watched</div>';
-            } else {
-                list.innerHTML = data.collections.map(col => {
-                    let typeBadge = '';
-                    if (col.watch_type === 'new') typeBadge = '<span class="badge bg-info-subtle text-info border border-info-subtle">New Only</span>';
-                    else if (col.watch_type === 'future') typeBadge = '<span class="badge bg-primary-subtle text-primary border border-primary-subtle">Future Only</span>';
-                    else if (col.watch_type === 'all_future') typeBadge = '<span class="badge bg-success-subtle text-success border border-success-subtle">All + Future</span>';
-
-                    const lastChecked = col.last_checked ? new Date(col.last_checked + 'Z').toLocaleString() : 'Never'; // +Z because typically stored as UTC string without TZ
-                    const nextCheck = col.last_checked ? 'Approx. 24h later' : 'Pending';
-
-                    return `
-                        <div class="list-group-item p-3 d-flex align-items-center justify-content-between">
-                            <div>
-                                <h6 class="mb-1 font-heading fw-bold">${col.identifier}</h6>
-                                <div class="d-flex align-items-center gap-2 mb-1">
-                                    ${typeBadge}
-                                    <span class="text-xs text-secondary">Added: ${new Date(col.created_at + 'Z').toLocaleDateString()}</span>
-                                </div>
-                                <div class="text-xs text-secondary font-monospace">Last checked: ${lastChecked}</div>
-                            </div>
-                            <button class="btn btn-sm btn-outline-danger-modern" onclick="ui.removeWatcher('${col.identifier}')">
-                                Stop Watching
-                            </button>
-                        </div>
-                     `;
-                }).join('');
-            }
-        } catch (e) {
-            console.error(e);
-            list.innerHTML = '<div class="text-danger text-center p-5 text-sm">Error loading watched collections</div>';
-        }
-    }
-
-    async removeWatcher(identifier) {
-        if (!confirm(`Stop watching ${identifier}?`)) return;
-
-        try {
-            const response = await fetch(`/api/watcher/collections/${identifier}`, { method: 'DELETE' });
-            if (response.ok) {
-                this.loadWatchedCollections();
-            }
-        } catch (e) {
-            console.error(e);
-            alert('Failed to remove watcher');
         }
     }
 
@@ -390,62 +392,63 @@ class IAMirrorUI {
         }
     }
 
-    async browseDest() {
+    async loadDestinationHint() {
         try {
-            const response = await fetch('/api/destinations');
-            const data = await response.json();
-
-            const currentDest = document.getElementById('destination')?.value || '/data';
-            const choice = prompt(
-                'Select destination:\\n' + data.destinations.join('\\n'),
-                currentDest
-            );
-
-            if (choice) {
-                document.getElementById('destination').value = choice;
-            }
+            const response = await fetch('/api/config');
+            if (!response.ok) return;
+            const config = await response.json();
+            this.defaultDestination = config.destination || config.destdir || '/downloads';
+            this.updateDestinationPath();
         } catch (error) {
-            console.error('Error loading destinations:', error);
+            console.error('Error loading destination config:', error);
         }
     }
 
-    downloadLogs() {
-        if (this.currentJob?.id) {
-            window.location.href = `/api/jobs/${this.currentJob.id}/log`;
+    async loadRecentDownloads() {
+        try {
+            const response = await fetch('/api/jobs/recent?days=7&limit=20');
+            if (!response.ok) return;
+            const data = await response.json();
+            this.renderRecentDownloads(data.jobs || []);
+        } catch (error) {
+            console.error('Error loading recent downloads:', error);
         }
     }
 
     // ============ UI Updates ============
 
     updateUI(data) {
-        // Handle credentials warning
-        const credsWarning = document.getElementById('creds-warning');
-        if (credsWarning && data.system) {
-            if (data.system.has_credentials) {
-                credsWarning.classList.add('d-none');
-            } else {
-                credsWarning.classList.remove('d-none');
-            }
-        }
-
         if (data.active_job) {
             this.currentJob = data.active_job;
             this.isRunning = true;
+            this.liveProgress.status = 'running';
             this.showSection('status-section');
             this.updateJobUI(data.active_job);
-            this.showSection('logs-section');
-            if (this.filesMap.size > 0) this.showSection('files-section');
+        } else if (data.is_processing && (data.queue_length || 0) > 0) {
+            this.currentJob = null;
+            this.isRunning = true;
+            this.liveProgress.status = 'queued';
+            this.showSection('status-section');
+            const titleEl = document.getElementById('active-job-id');
+            if (titleEl) titleEl.textContent = `Queued jobs: ${data.queue_length}`;
+            const badge = document.getElementById('job-status-badge');
+            if (badge) {
+                badge.textContent = 'QUEUED';
+                badge.className = 'badge badge-pill bg-secondary';
+            }
         } else {
             this.currentJob = null;
             this.isRunning = false;
             this.hideSection('status-section');
-            this.hideSection('files-section');
-            this.hideSection('logs-section');
+            if (this.liveProgress.status !== 'completed') {
+                this.liveProgress.status = 'idle';
+                this.liveProgress.currentFileBytesDone = 0;
+                this.liveProgress.currentFileBytesTotal = 0;
+            }
         }
 
-        // Always hide queue section in immediate execution model
-        this.hideSection('queue-section');
-
+        this.updateDestinationPath(data.active_job || null);
+        this.updateAsciiConsole();
         this.updateUIState();
     }
 
@@ -465,7 +468,9 @@ class IAMirrorUI {
 
         if (this.isRunning || (this.currentJob && this.currentJob.status === 'running')) {
             if (startBtn) {
-                startBtn.style.display = 'none';
+                startBtn.style.display = 'inline-block';
+                startBtn.disabled = false;
+                startBtn.innerHTML = '<svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16" class="me-2"><path d="M8 3v10M3 8h10"/></svg>Queue More';
             }
             if (stopBtn) {
                 stopBtn.style.display = 'inline-block';
@@ -487,19 +492,30 @@ class IAMirrorUI {
             this.currentJob = data;
             this.isRunning = true;
             this.showSection('status-section');
-            this.showSection('logs-section');
-            if (this.filesMap.size > 0) this.showSection('files-section');
+            this.liveProgress.status = 'running';
+            this.updateDestinationPath(this.currentJob);
         } else if (data.status === 'completed' || data.status === 'failed') {
             this.isRunning = false;
             // Show completion notification
             const statusMsg = data.status === 'completed' ? 'Download completed!' : 'Download failed.';
             const statusType = data.status === 'completed' ? 'success' : 'danger';
             this.setActionStatus(statusMsg, statusType);
-            
+            this.liveProgress.status = data.status;
+            if (data.status === 'completed') {
+                this.liveProgress.remainingBytesEstimate = 0;
+                this.liveProgress.etaSeconds = 0;
+            }
+            this.updateAsciiConsole();
+            this.loadRecentDownloads();
+
+            // Send browser notification
+            this.sendNotification('Job Update', {
+                body: `The download has ${data.status}.`
+            });
+
             // Keep status visible for a moment, then hide
             setTimeout(() => {
                 this.hideSection('status-section');
-                this.hideSection('files-section');
                 this.currentJob = null;
                 this.loadStatus(); // Refresh full status
             }, 3000);
@@ -536,12 +552,67 @@ class IAMirrorUI {
     }
 
     updateProgress(progress) {
-        const filesDone = progress.files_done || 0;
-        const filesTotal = progress.files_total || 0;
-        const bytesDone = progress.bytes_done || 0;
-        const bytesTotal = progress.bytes_total || 0;
+        const eventType = progress.type || 'progress';
 
-        const percent = filesTotal > 0 ? Math.round((filesDone / filesTotal) * 100) : 0;
+        if (eventType === 'dry_run_summary') {
+            this.liveProgress.filesTotal = Number(progress.files_total || 0) || null;
+            this.liveProgress.totalKnownBytes = Number(progress.known_size_bytes || 0) || null;
+            this.liveProgress.remainingBytesEstimate = Number(progress.remaining_known_bytes || 0) || 0;
+            this.liveProgress.etaSeconds = Number(progress.simulated_seconds || 0) || 0;
+        }
+
+        if (eventType === 'file_end') {
+            this.liveProgress.filesDone += 1;
+            const fileBytes = Number(progress.bytes_total || 0) || 0;
+            this.liveProgress.downloadedBytesCompleted += fileBytes;
+            this.liveProgress.currentFileBytesDone = 0;
+            this.liveProgress.currentFileBytesTotal = 0;
+        }
+
+        if (eventType === 'file_start') {
+            this.liveProgress.currentFileBytesDone = 0;
+            this.liveProgress.currentFileBytesTotal = Number(progress.bytes_total || 0) || 0;
+        }
+
+        if (eventType === 'progress' || eventType === 'file_start' || eventType === 'file_end') {
+            if (progress.speed) {
+                this.liveProgress.speedText = progress.speed;
+                this.liveProgress.speedMBps = this.parseSpeed(progress.speed);
+            }
+            if (progress.eta !== undefined && progress.eta !== null) {
+                const eta = Number(progress.eta);
+                this.liveProgress.etaSeconds = Number.isFinite(eta) ? eta : this.liveProgress.etaSeconds;
+            }
+            if (progress.bytes_done !== undefined) {
+                this.liveProgress.currentFileBytesDone = Number(progress.bytes_done || 0);
+            }
+            if (progress.bytes_total !== undefined) {
+                this.liveProgress.currentFileBytesTotal = Number(progress.bytes_total || 0);
+            }
+        }
+
+        if (progress.files_done !== undefined) {
+            this.liveProgress.filesDone = Number(progress.files_done || 0);
+        }
+        if (progress.files_total !== undefined) {
+            this.liveProgress.filesTotal = Number(progress.files_total || 0) || this.liveProgress.filesTotal;
+        }
+        if (progress.bytes_total !== undefined && progress.files_total !== undefined) {
+            const maybeTotal = Number(progress.bytes_total || 0);
+            if (maybeTotal > 0) this.liveProgress.totalKnownBytes = maybeTotal;
+        }
+
+        const bytesDoneEstimated = this.estimatedBytesDone();
+        const remainingBytesEstimated = this.estimatedRemainingBytes();
+        const totalBytesEstimated = this.estimatedTotalBytes();
+        const filesDone = this.liveProgress.filesDone || 0;
+        const filesTotal = this.liveProgress.filesTotal || 0;
+        const bytesDone = bytesDoneEstimated;
+        const bytesTotal = totalBytesEstimated;
+
+        const percent = bytesTotal > 0
+            ? Math.max(0, Math.min(100, Math.round((bytesDone / bytesTotal) * 100)))
+            : (filesTotal > 0 ? Math.round((filesDone / filesTotal) * 100) : 0);
 
         // Compact Progress Elements
         const progressBar = document.getElementById('progress-bar');
@@ -551,327 +622,187 @@ class IAMirrorUI {
         }
 
         const filesCount = document.getElementById('files-count');
-        if (filesCount) filesCount.textContent = `${filesDone} / ${filesTotal} files`;
+        if (filesCount) {
+            filesCount.textContent = filesTotal > 0 ? `${filesDone} / ${filesTotal} files` : `${filesDone} files`;
+        }
 
         const bytesEta = document.getElementById('bytes-and-eta');
         if (bytesEta) {
-            // Clarify that this is what we have downloaded vs goal
-            // Or if existing, it's what we verified.
-            // Using "Downloaded" implies transferred. "Processed" might be safer but "Downloaded" is standard.
-            // Let's stick to Format: "X MB / Y MB • ETA: Z"
-            // If bytesTotal is 0 (unknown), just show downloaded.
             const totalStr = bytesTotal > 0 ? ` / ${this.formatBytes(bytesTotal)}` : '';
-            const etaStr = progress.eta ? ` • ETA ${this.formatEta(progress.eta)}` : '';
+            const etaStr = this.liveProgress.etaSeconds ? ` • ETA ${this.formatEta(this.liveProgress.etaSeconds)}` : '';
             bytesEta.textContent = `${this.formatBytes(bytesDone)}${totalStr}${etaStr}`;
         }
 
         const speed = document.getElementById('speed');
-        if (speed) speed.textContent = progress.speed || '0 MB/s';
+        if (speed) speed.textContent = this.liveProgress.speedText || '0 MB/s';
 
-
-        // Donation milestones
-        this.checkDonationMilestones(bytesDone);
+        this.liveProgress.status = this.isRunning ? 'running' : (this.liveProgress.status || 'idle');
+        this.updateAsciiConsole();
     }
 
+    resetLiveProgress(status = 'idle') {
+        this.liveProgress = {
+            status,
+            filesDone: 0,
+            filesTotal: null,
+            downloadedBytesCompleted: 0,
+            currentFileBytesDone: 0,
+            currentFileBytesTotal: 0,
+            totalKnownBytes: null,
+            remainingBytesEstimate: null,
+            etaSeconds: null,
+            speedMBps: 0,
+            speedText: '0 MB/s'
+        };
+        this.updateAsciiConsole();
+    }
 
-    checkDonationMilestones(bytes) {
-        for (const milestone of this.donationMilestones) {
-            if (bytes >= milestone.bytes && !milestone.shown) {
-                this.showDonationAlert(milestone.label);
-                milestone.shown = true;
-                break; // Show one at a time
+    estimatedBytesDone() {
+        const completed = Number(this.liveProgress.downloadedBytesCompleted || 0);
+        const current = Number(this.liveProgress.currentFileBytesDone || 0);
+        const fromProgress = Number(this.liveProgress.bytesDone || 0);
+        return Math.max(completed + current, fromProgress, 0);
+    }
+
+    estimatedRemainingBytes() {
+        if (Number.isFinite(this.liveProgress.remainingBytesEstimate)) {
+            return Math.max(Number(this.liveProgress.remainingBytesEstimate), 0);
+        }
+        const eta = Number(this.liveProgress.etaSeconds || 0);
+        const speedBytes = Math.max(Number(this.liveProgress.speedMBps || 0), 0) * 1024 * 1024;
+        if (eta > 0 && speedBytes > 0) {
+            return eta * speedBytes;
+        }
+        return 0;
+    }
+
+    estimatedTotalBytes() {
+        const known = Number(this.liveProgress.totalKnownBytes || 0);
+        if (known > 0) return known;
+        return this.estimatedBytesDone() + this.estimatedRemainingBytes();
+    }
+
+    updateDestinationPath(job = null) {
+        const destinationEl = document.getElementById('destination-path');
+        if (!destinationEl) return;
+
+        const root = (job?.config?.destdir || this.defaultDestination || '/downloads').replace(/\/+$/, '');
+        const inputIds = this.getIdentifiersFromInput();
+
+        let resolved = root || '/downloads';
+        if (job?.identifier) {
+            resolved = `${root}/${job.identifier}`;
+        } else if (inputIds.length > 0) {
+            resolved = `${root}/${inputIds[0]}`;
+            if (inputIds.length > 1) {
+                resolved += ` (+${inputIds.length - 1} more)`;
             }
         }
+
+        destinationEl.textContent = resolved;
     }
 
-    showDonationAlert(label) {
-        const alert = document.getElementById('donation-alert');
-        const message = document.getElementById('donation-message');
-        if (alert && message) {
-            message.textContent = `You've downloaded ${label} from the Internet Archive, please consider donating!`;
-            alert.classList.remove('d-none');
-        }
-    }
+    updateAsciiConsole() {
+        const textEl = document.getElementById('ascii-progress-text');
+        const percentEl = document.getElementById('ascii-progress-percent');
+        if (!textEl || !percentEl) return;
 
-    async removeFromQueue(jobId) {
-        if (!confirm('Remove this item from the queue?')) return;
+        const status = this.isRunning
+            ? (this.liveProgress.status === 'idle' ? 'running' : this.liveProgress.status)
+            : (this.liveProgress.status || 'idle');
+        const doneBytes = this.estimatedBytesDone();
+        const remainingBytes = this.estimatedRemainingBytes();
+        const totalBytes = this.estimatedTotalBytes();
 
-        try {
-            const response = await fetch(`/api/queue/${jobId}`, { method: 'DELETE' });
-            if (response.ok) {
-                this.updateQueueUI();
-            }
-        } catch (error) {
-            console.error('Error removing from queue:', error);
-        }
-    }
+        const percent = totalBytes > 0 ? Math.max(0, Math.min(100, Math.round((doneBytes / totalBytes) * 100))) : 0;
+        const bar = this.buildAsciiBar(percent, 20);
 
-    updateQueueUI() {
-        // Reload history data
-        fetch('/api/jobs?limit=100')
-            .then(r => r.json())
-            .then(data => {
-                const completed = data.jobs.filter(j => j.status === 'completed' || j.status === 'failed');
-
-                document.getElementById('history-count').textContent = completed.length;
-
-                // Queue list is no longer used in immediate execution model
-                const queueList = document.getElementById('queue-list');
-                if (queueList) {
-                    queueList.innerHTML = '';
-                    } else {
-                        queueList.innerHTML = queued.map(job => {
-                            const thumb = job.thumbnail_url ?
-                                `<img src="${job.thumbnail_url}" class="rounded flex-shrink-0 object-cover" style="width: 48px; height: 48px;" alt="">` :
-                                `<div class="bg-offset rounded d-flex align-items-center justify-content-center flex-shrink-0 text-secondary" style="width: 48px; height: 48px;">
-                                    <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16"><path d="M14 4.5V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2h5.5L14 4.5zm-3 0A1.5 1.5 0 0 1 9.5 3V1.5a1 1 0 0 1 1.5 1.5H11a.5.5 0 0 1-.5.5z"/></svg>
-                                 </div>`;
-
-                            const title = job.title || job.identifier;
-                            const creator = job.creator ? `<small class="text-xs text-secondary d-block text-truncate mb-0.5" style="max-width: 350px;">${job.creator}</small>` : '';
-
-                            return `
-                                <div class="list-group-item d-flex align-items-center gap-3 border-light-subtle">
-                                    ${thumb}
-                                    <div class="flex-grow-1 min-w-0">
-                                        <div class="d-flex justify-content-between align-items-start">
-                                            <div class="min-w-0">
-                                                <h6 class="mb-0 text-truncate font-heading fw-semibold text-sm" style="max-width: 330px;" title="${title}">${title}</h6>
-                                                ${creator}
-                                                <small class="text-xs text-secondary font-monospace opacity-75">${job.identifier}</small>
-                                            </div>
-                                            <button class="btn btn-sm btn-icon btn-ghost btn-remove-item text-danger opacity-50 hover-opacity-100" onclick="ui.removeFromQueue(${job.id})" title="Remove">
-                                                <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            `;
-                        }).join('');
-                    }
-                }
-
-                // Update history with Rich Cards
-                const historyCard = document.getElementById('history-card');
-                const historyList = document.getElementById('history-list');
-
-                if (historyList) {
-                    if (completed.length === 0) {
-                        historyList.innerHTML = '<div class="text-muted text-center p-4 text-xs">No history yet</div>';
-                        if (historyCard) historyCard.style.display = 'none';
-                    } else {
-                        if (historyCard) historyCard.style.display = 'block';
-                        historyList.innerHTML = completed.slice(0, 20).map(job => {
-                            const thumb = job.thumbnail_url ?
-                                `<img src="${job.thumbnail_url}" class="rounded flex-shrink-0 object-cover" style="width: 80px; height: 80px;" alt="">` :
-                                `<div class="bg-offset rounded d-flex align-items-center justify-content-center flex-shrink-0 text-secondary" style="width: 80px; height: 80px;">
-                                    <span class="fs-4">📄</span>
-                                 </div>`;
-
-                            const title = job.title || job.identifier;
-                            const creator = job.creator || '';
-
-                            let badgeClass = 'bg-secondary';
-                            if (job.status === 'completed') badgeClass = 'bg-success';
-                            if (job.status === 'failed') badgeClass = 'bg-danger';
-                            if (job.status === 'cancelled') badgeClass = 'bg-warning';
-
-                            // Extract stats
-                            let totalBytes = 0;
-                            let totalFiles = 0;
-                            if (job.progress) {
-                                totalBytes = job.progress.bytes_done || 0;
-                                totalFiles = job.progress.files_done || 0;
-                            }
-                            const sizeStr = this.formatBytes(totalBytes);
-
-                            return `
-                                <div class="list-group-item d-flex gap-3 p-3 border-light-subtle">
-                                    ${thumb}
-                                    <div class="flex-grow-1 min-w-0 d-flex flex-column justify-content-center">
-                                        <div class="d-flex justify-content-between align-items-start mb-1">
-                                            <div class="min-w-0 me-3">
-                                                <h6 class="mb-0 font-heading fw-bold text-truncate" title="${title}">${title}</h6>
-                                                ${creator ? `<div class="text-xs text-secondary text-truncate">${creator}</div>` : ''}
-                                            </div>
-                                            <span class="badge badge-pill ${badgeClass} border-0">${job.status.toUpperCase()}</span>
-                                        </div>
-                                        
-                                        <div class="d-flex justify-content-between align-items-end mt-1">
-                                            <div class="text-xs text-secondary font-monospace opacity-75">
-                                                <div class="mb-1">${job.identifier}</div>
-                                                <div class="d-flex gap-3">
-                                                    <span>📂 ${totalFiles} files</span>
-                                                    <span>💾 ${sizeStr}</span>
-                                                </div>
-                                            </div>
-                                            
-                                            <div class="d-flex gap-2">
-                                                <a href="https://archive.org/details/${job.identifier}" target="_blank" class="btn btn-sm btn-outline-secondary-modern btn-icon" title="View on Archive.org">
-                                                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
-                                                </a>
-                                                <a href="/api/jobs/${job.id}/log" class="btn btn-sm btn-ghost btn-icon" title="Download Log">
-                                                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg>
-                                                </a>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            `;
-                        }).join('');
-                    }
-                }
-            });
-    }
-
-    onJobUpdate(data) {
-        if (data.active_job) {
-            this.updateActiveJobUI(data.active_job);
-        } else {
-            this.resetActiveJobUI();
-        }
-
-        if (data.queue_length !== undefined) {
-            document.getElementById('queue-count').textContent = data.queue_length;
-        }
-
-        // Check if job changed to reset file list
-        if (data.active_job && data.active_job.id !== this.currentJobId) {
-            this.currentJobId = data.active_job.id;
-            this.filesMap.clear();
-            this.renderFileList();
-            // Reset logs if new job
-            const logsContainer = document.getElementById('logs-container');
-            if (logsContainer) logsContainer.innerHTML = '<div class="text-muted opacity-50">[System Ready]</div>';
-        }
-    }
-
-    onJobLog(data) {
-        const logsContainer = document.getElementById('logs-container');
-        if (!logsContainer) return;
-
-        const div = document.createElement('div');
-        div.className = 'log-line text-nowrap';
-        // highlight errors
-        if (data.line.toLowerCase().includes('error') || data.line.toLowerCase().includes('exception')) {
-            div.classList.add('text-danger', 'fw-bold');
-            // Auto expand logs on error
-            const collapse = document.getElementById('logs-collapse');
-            const toggle = document.getElementById('logs-toggle');
-            if (collapse && !collapse.classList.contains('show')) {
-                // Determine if we should expand. Bootstrap 5 API would be better but simple class check works for now.
-                // We'll rely on user click or simple attribute manipulation if needed, 
-                // but let's just trigger a click if we can.
-                if (toggle) toggle.click();
-            }
-
-            // Check for lock file error specifically
-            if (data.line.includes('Lock file exists') && this.currentJobId) {
-                const unlockBtn = document.createElement('button');
-                unlockBtn.className = 'btn btn-xs btn-danger ms-2';
-                unlockBtn.textContent = 'Force Unlock';
-                unlockBtn.onclick = () => this.unlockJob(this.currentJobId);
-                div.appendChild(unlockBtn);
+        let filesRemaining = '--';
+        if (Number.isFinite(this.liveProgress.filesTotal) && this.liveProgress.filesTotal > 0) {
+            filesRemaining = Math.max(this.liveProgress.filesTotal - this.liveProgress.filesDone, 0).toString();
+        } else if (remainingBytes > 0 && this.liveProgress.filesDone > 0) {
+            const avgFileSize = doneBytes / this.liveProgress.filesDone;
+            if (avgFileSize > 0) {
+                filesRemaining = Math.max(Math.ceil(remainingBytes / avgFileSize), 0).toString();
             }
         }
-        // If we didn't append child button above, we set text content. But if we did, we need to handle text differently.
-        // Let's refactor slightly to be safe.
-        const textNode = document.createTextNode(`[${new Date().toLocaleTimeString()}] ${data.line}`);
-        div.insertBefore(textNode, div.firstChild);
 
+        const etaText = this.liveProgress.etaSeconds ? this.formatEta(this.liveProgress.etaSeconds) : '--:--';
+        const remainText = remainingBytes > 0 ? this.formatBytes(remainingBytes) : '--';
+        const speedText = this.liveProgress.speedText || '0 MB/s';
 
-        logsContainer.appendChild(div);
+        textEl.textContent = [
+            '+------------------------------------------+',
+            ' IA-MIRROR PROGRESS',
+            '+------------------------------------------+',
+            ` STATUS         : ${status}`,
+            ` FILES REMAIN   : ${filesRemaining}`,
+            ` TIME REMAIN    : ${etaText}`,
+            ` DATA REMAIN    : ${remainText}`,
+            ` SPEED          : ${speedText}`,
+            ` PROGRESS       : [${bar}] ${percent}%`,
+            '+------------------------------------------+'
+        ].join('\n');
 
-        // Limit log lines to prevent memory issues
-        if (logsContainer.children.length > 500) {
-            logsContainer.removeChild(logsContainer.firstChild);
-        }
-
-        const autoScroll = document.getElementById('auto-scroll');
-        if (autoScroll && autoScroll.checked) {
-            logsContainer.scrollTop = logsContainer.scrollHeight;
-        }
+        percentEl.textContent = `${percent}%`;
     }
 
-    onJobProgress(data) {
-        // Handle legacy global progress
-        if (data.files_done !== undefined) {
-            this.updateGlobalProgress(data);
+    buildAsciiBar(percent, width = 20) {
+        const clamped = Math.max(0, Math.min(100, percent));
+        const filled = Math.round((clamped / 100) * width);
+        return '█'.repeat(filled) + '░'.repeat(Math.max(width - filled, 0));
+    }
+
+    renderRecentDownloads(jobs) {
+        const container = document.getElementById('recent-downloads');
+        const countEl = document.getElementById('recent-downloads-count');
+        if (!container) return;
+
+        if (countEl) countEl.textContent = `${jobs.length}`;
+
+        if (!jobs.length) {
+            container.innerHTML = '<div class="text-xs text-secondary p-2">No completed downloads in the last 7 days.</div>';
             return;
         }
 
-        // Handle granular file events
-        if (data.type === 'file_start') {
-            this.filesMap.set(data.filename, {
-                filename: data.filename,
-                size: data.bytes_total,
-                status: 'downloading',
-                progress: 0
-            });
-            this.renderFileList();
-        } else if (data.type === 'file_end') {
-            const file = this.filesMap.get(data.filename);
-            if (file) {
-                file.status = data.status;
-                file.progress = 100;
-                this.updateFileItem(file);
-            }
-        } else if (data.type === 'progress') {
-            // Update overall progress
-            this.updateProgress(data);
-        } else if (data.type === 'dry_run_summary') {
-            this.showDryRunModal(data);
-        }
-    }
+        const statusClass = {
+            completed: 'text-success',
+            failed: 'text-danger',
+            stopped: 'text-warning'
+        };
 
-    updateGlobalProgress(data) {
-        // Update overall progress metrics
-        this.updateProgress(data);
-        this.updateQueueUI(); // Refresh history periodically
-    }
-
-    renderFileList() {
-        const fileList = document.getElementById('file-list');
-        if (!fileList) return;
-
-        if (this.filesMap.size === 0) {
-            this.hideSection('files-section');
-            return;
-        }
-
-        this.showSection('files-section');
-        const files = Array.from(this.filesMap.values());
-        
-        fileList.innerHTML = files.map(file => {
-            let icon = '⏳';
-            let statusClass = 'text-secondary';
-            
-            if (file.status === 'downloaded' || file.status === 'completed') {
-                icon = '✓';
-                statusClass = 'text-success';
-            } else if (file.status === 'failed' || file.status === 'error') {
-                icon = '✗';
-                statusClass = 'text-danger';
-            } else if (file.status === 'downloading') {
-                icon = '⬇';
-                statusClass = 'text-primary';
-            }
-            
+        container.innerHTML = jobs.map((job) => {
+            const klass = statusClass[job.status] || 'text-secondary';
+            const sizeText = this.formatBytes(Number(job.bytes_total || 0));
+            const completed = job.completed_at ? new Date(job.completed_at.replace(' ', 'T') + 'Z').toLocaleString() : '—';
             return `
-                <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3 ${statusClass}">
-                    <span class="text-truncate text-xs font-monospace" title="${file.filename}">
-                        <span class="me-2">${icon}</span>
-                        ${file.filename}
-                    </span>
-                    <span class="text-xs font-monospace text-secondary ms-2">${this.formatBytes(file.size || 0)}</span>
-                </li>
+                <div class="recent-download-item">
+                    <div class="d-flex justify-content-between align-items-center gap-2">
+                        <div class="text-sm fw-semibold text-truncate">${this.escapeHtml(job.identifier || 'unknown')}</div>
+                        <div class="text-xs ${klass} fw-bold text-uppercase">${this.escapeHtml(job.status || 'unknown')}</div>
+                    </div>
+                    <div class="recent-download-path mt-1">${this.escapeHtml(job.resolved_path || '--')}</div>
+                    <div class="d-flex justify-content-between text-xs text-secondary mt-1">
+                        <span>${sizeText}</span>
+                        <span>${this.escapeHtml(completed)}</span>
+                    </div>
+                </div>
             `;
         }).join('');
     }
 
-    updateFileItem(file) {
-        this.renderFileList();
+    escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
+
+
+
+
 
     setActionStatus(message, type = 'info') {
         const statusEl = document.getElementById('action-status');
@@ -899,240 +830,12 @@ class IAMirrorUI {
             statusEl.innerHTML = '';
         }, 5000);
     }
-        // Populate modal
-        document.getElementById('dry-total-files').textContent = data.files_total;
-        document.getElementById('dry-total-size').textContent = this.formatBytes(data.known_size_bytes);
-        document.getElementById('dry-est-time').textContent = this.formatEta(data.simulated_seconds);
-        document.getElementById('dry-file-count').textContent = data.files ? data.files.length : 0;
 
-        const list = document.getElementById('dry-file-list');
-        if (list && data.files) {
-            list.innerHTML = data.files.map(f => `
-                <tr>
-                    <td class="ps-3 py-2 text-truncate" style="max-width: 400px;" title="${f.filename}">${f.filename}</td>
-                    <td class="pe-3 py-2 text-end font-monospace text-xs">${this.formatBytes(f.size)}</td>
-                </tr>
-            `).join('');
 
-            // Add orphaned files if any
-            if (data.orphans && data.orphans.length > 0) {
-                list.innerHTML += `
-                    <tr><td colspan="2" class="bg-light-subtle fw-bold text-center py-2 text-warning mt-2">Orphaned Files (to be deleted)</td></tr>
-                 ` + data.orphans.map(o => `
-                    <tr>
-                         <td class="ps-3 py-2 text-truncate text-danger" style="max-width: 400px;">${o}</td>
-                         <td class="pe-3 py-2 text-end font-monospace text-xs">-</td>
-                    </tr>
-                 `).join('');
-            }
-        }
 
-        // Store config for confirmation
-        this.lastDryRunConfig = data.config;
 
-        // Show modal using Bootstrap API
-        const modalEl = document.getElementById('dryRunModal');
-        const modal = new bootstrap.Modal(modalEl);
-        modal.show();
 
-        // Bind confirm button
-        const confirmBtn = document.getElementById('confirm-download-btn');
-        confirmBtn.onclick = () => {
-            modal.hide();
-            this.confirmDownload();
-        };
-    }
 
-    async confirmDownload() {
-        if (!this.lastDryRunConfig) return;
-
-        const config = { ...this.lastDryRunConfig };
-        config.dry_run = false; // Disable dry run
-        // Ensure identifier/destdir are preserved
-
-        try {
-            // We need to construct the request body similar to addToQueue but derived from the dry run config.
-            // The dry run config might be fully resolved (lowercase keys), whereas addToQueue expects certain structure.
-            // Actually, we can just call /api/queue/add directly with the updated config.
-
-            // Reconstruct the "text" input from the config would be hard if it was a batch.
-            // But if it was a single item run, we can just use the identifier.
-            let text = config.identifier;
-
-            this.setActionStatus('Starting actual download...', 'info');
-
-            const response = await fetch('/api/queue/add', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    text: text,
-                    // valid operation?
-                    operation: 'download',
-                    config: config
-                })
-            });
-
-            const data = await response.json();
-
-            if (response.ok) {
-                this.setActionStatus(`Download started for ${data.valid_count} item(s).`, 'success');
-                this.updateQueueUI();
-                await this.startNow();
-            } else {
-                this.setActionStatus('Error starting download.', 'danger');
-            }
-        } catch (e) {
-            console.error(e);
-            this.setActionStatus('Error confirming download', 'danger');
-        }
-    }
-
-    updateFileItem(file) {
-        // Simple re-render for now to ensure consistency
-        this.renderFileList();
-    }
-
-    updateGlobalProgress(data) {
-        const percent = Math.round((data.bytes_done / (data.bytes_total || 1)) * 100) || 0;
-
-        document.getElementById('progress-bar').style.width = `${percent}%`;
-        document.getElementById('progress-percent').textContent = `${percent}%`;
-
-        document.getElementById('files-count').textContent = `${data.files_done} / ${data.files_total}`;
-        document.getElementById('bytes-count').textContent = this.formatBytes(data.bytes_done);
-
-        if (data.speed) {
-            document.getElementById('speed').textContent = data.speed;
-        }
-
-        if (data.eta) {
-            document.getElementById('eta').textContent = data.eta;
-        }
-
-        // Check milestones
-        this.checkDonationMilestones(data.bytes_done);
-    }
-
-    renderFileList() {
-        const list = document.getElementById('file-list');
-        const section = document.getElementById('files-section');
-        if (!list || !section) return;
-
-        if (this.filesMap.size > 0) {
-            section.style.display = 'block';
-        } else {
-            section.style.display = 'none';
-        }
-
-        // Re-render whole list (naive approach, optimized by updateFileItem later)
-        // Sort: downloading first, then failed, then success/skipped
-        const sorted = Array.from(this.filesMap.values()).sort((a, b) => {
-            if (a.status === 'downloading' && b.status !== 'downloading') return -1;
-            if (b.status === 'downloading' && a.status !== 'downloading') return 1;
-            return 0; // Keep order otherwise
-        });
-
-        list.innerHTML = sorted.map(f => this.createFileItemHTML(f)).join('');
-    }
-
-    createFileItemHTML(file) {
-        let icon = '📄';
-        let statusClass = 'text-secondary';
-        let statusText = 'Pending';
-
-        if (file.status === 'downloading') {
-            icon = '⬇️';
-            statusClass = 'text-primary';
-            statusText = 'Downloading';
-        } else if (file.status === 'success') {
-            icon = '✅';
-            statusClass = 'text-success';
-            statusText = 'Done';
-        } else if (file.status === 'failed') {
-            icon = '❌';
-            statusClass = 'text-danger';
-            statusText = 'Failed';
-        } else if (file.status === 'skipped') {
-            icon = '⏭️';
-            statusClass = 'text-muted';
-            statusText = 'Skipped';
-        }
-
-        const size = file.size ? this.formatBytes(file.size) : '?';
-        const progress = Math.round(file.progress || 0);
-
-        return `
-            <li class="list-group-item d-flex align-items-center gap-2 py-2" id="file-${this.safeId(file.filename)}">
-                <div class="text-lg">${icon}</div>
-                <div class="flex-grow-1 min-w-0">
-                    <div class="d-flex justify-content-between text-xs mb-1">
-                        <span class="fw-medium text-truncate" title="${file.filename}">${file.filename}</span>
-                        <span class="font-monospace">${size}</span>
-                    </div>
-                    ${file.status === 'downloading' ? `
-                    <div class="progress progress-modern" style="height: 4px;">
-                        <div class="progress-bar bg-gradient-primary" style="width: ${progress}%"></div>
-                    </div>
-                    ` : `
-                    <div class="text-xs ${statusClass}">${statusText}</div>
-                    `}
-                </div>
-            </li>
-        `;
-    }
-
-    updateFileItem(file) {
-        const el = document.getElementById(`file-${this.safeId(file.filename)}`);
-        if (el) {
-            el.outerHTML = this.createFileItemHTML(file);
-        } else {
-            // New item appearing mid-stream
-            this.renderFileList();
-        }
-    }
-
-    safeId(str) {
-        return str.replace(/[^a-zA-Z0-9]/g, '_');
-    }
-
-    addLogLine(jobId, line) {
-        this.logBuffer.push(line);
-
-        const container = document.getElementById('logs-container');
-        if (container) {
-            const div = document.createElement('div');
-            // Check for lock file error specifically
-            if (line.includes('Lock file exists') && this.currentJobId) {
-                div.className = 'log-line text-nowrap text-danger fw-bold';
-                div.textContent = `[${new Date().toLocaleTimeString()}] ${line}`;
-
-                const unlockBtn = document.createElement('button');
-                unlockBtn.className = 'btn btn-xs btn-danger ms-2';
-                unlockBtn.textContent = 'Force Unlock';
-                unlockBtn.onclick = () => this.unlockJob(this.currentJobId);
-                div.appendChild(unlockBtn);
-            } else {
-                div.className = 'log-line text-nowrap';
-                // highlight errors
-                if (line.toLowerCase().includes('error') || line.toLowerCase().includes('exception')) {
-                    div.classList.add('text-danger', 'fw-bold');
-                }
-                div.textContent = `[${new Date().toLocaleTimeString()}] ${line}`;
-            }
-
-            container.appendChild(div);
-
-            // Limit log lines to prevent memory issues
-            while (container.children.length > 500) {
-                container.removeChild(container.firstChild);
-            }
-
-            const autoScroll = document.getElementById('auto-scroll');
-            if (autoScroll && autoScroll.checked) {
-                container.scrollTop = container.scrollHeight;
-            }
-        }
-    }
 
     async unlockJob(jobId) {
         if (!confirm('Force unlock this job? Only do this if you are sure no process is running.')) return;
@@ -1152,18 +855,6 @@ class IAMirrorUI {
 
     // ============ Utilities ============
 
-    setActionStatus(message, variant = 'muted') {
-        const el = document.getElementById('action-status');
-        if (!el) return;
-        const variants = {
-            success: 'text-success',
-            danger: 'text-danger',
-            warning: 'text-warning',
-            muted: 'text-muted'
-        };
-        el.className = `mt-2 small fw-medium ${variants[variant] || 'text-muted'}`;
-        el.textContent = message;
-    }
 
     parseSpeed(speedText) {
         if (!speedText) return 0;

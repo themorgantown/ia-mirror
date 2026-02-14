@@ -3,6 +3,7 @@
 import threading
 import time
 import os
+import shutil
 from typing import Callable, Dict, Optional
 from .storage import JobStorage
 from .jobs import create_runner
@@ -91,6 +92,17 @@ class QueueWorker:
         
         destdir = config.get('destdir', '/downloads')
         
+        # Check disk space (warn if < 5GB, stop if < 1GB)
+        try:
+            if os.path.exists(destdir):
+                total, used, free = shutil.disk_usage(destdir)
+                if free < 1 * 1024 * 1024 * 1024:  # 1GB
+                    print(f"CRITICAL: Low disk space ({free / (1024*1024):.2f} MB). Pausing queue.")
+                    self.storage.update_worker_state(is_processing_queue=False)
+                    return
+        except Exception as e:
+            print(f"Error checking disk space: {e}")
+            
         # Update state
         self.storage.update_worker_state(active_job_id=job_id, is_processing_queue=True)
         

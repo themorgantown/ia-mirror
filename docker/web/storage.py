@@ -4,7 +4,7 @@ import sqlite3
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import contextmanager
 from typing import List, Dict, Optional
 
@@ -98,28 +98,12 @@ class JobStorage:
                     active_job_id INTEGER,
                     active_pid INTEGER,
                     is_processing_queue BOOLEAN DEFAULT 0,
-                    last_event_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    can_stop BOOLEAN DEFAULT 1
-                )
-            """)
-
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS watched_collections (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    identifier TEXT NOT NULL UNIQUE,
-                    watch_type TEXT CHECK(watch_type IN ('new', 'future', 'all_future')) NOT NULL,
-                    interval_seconds INTEGER DEFAULT 86400,
-                    last_checked TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
-            # Initialize worker_state if empty
-            if conn.execute("SELECT COUNT(*) FROM worker_state").fetchone()[0] == 0:
-                conn.execute("""
-                    INSERT INTO worker_state (id, active_job_id, is_processing_queue)
-                    VALUES (1, NULL, 0)
-                """)
+            # Initialize worker state if empty (idle by default)
+            conn.execute("INSERT OR IGNORE INTO worker_state (id, is_processing_queue) VALUES (1, 0)")
 
             # Migration: Add new columns if they don't exist
             try:
@@ -134,6 +118,32 @@ class JobStorage:
                 conn.execute("ALTER TABLE jobs ADD COLUMN thumbnail_url TEXT")
             except sqlite3.OperationalError:
                 pass
+
+            # Migration: legacy worker_state schemas used last_event_at instead of last_updated
+            worker_cols = conn.execute("PRAGMA table_info(worker_state)").fetchall()
+            worker_col_names = {row[1] for row in worker_cols}
+            if 'last_updated' not in worker_col_names:
+                try:
+                    conn.execute("ALTER TABLE worker_state ADD COLUMN last_updated TIMESTAMP")
+                except sqlite3.OperationalError:
+                    pass
+
+                # Seed last_updated from last_event_at if present, else current timestamp
+                try:
+                    if 'last_event_at' in worker_col_names:
+                        conn.execute(
+                            """
+                            UPDATE worker_state
+                            SET last_updated = COALESCE(last_event_at, CURRENT_TIMESTAMP)
+                            WHERE last_updated IS NULL
+                            """
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE worker_state SET last_updated = CURRENT_TIMESTAMP WHERE last_updated IS NULL"
+                        )
+                except sqlite3.OperationalError:
+                    pass
     
     def add_job(self, identifier: str, input_original: str, operation: str = 'download', 
                 config: Dict = None, title: str = None, creator: str = None, 
@@ -176,6 +186,26 @@ class JobStorage:
                 LIMIT ?
                 """,
                 (limit,)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_recent_downloads(self, days: int = 7, limit: int = 25) -> List[Dict]:
+        """Get recent completed/failed downloads within the past N days."""
+        days = max(1, int(days))
+        limit = max(1, int(limit))
+        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE status NOT IN ('queued', 'running')
+                  AND completed_at IS NOT NULL
+                  AND completed_at >= ?
+                ORDER BY completed_at DESC
+                LIMIT ?
+                """,
+                (cutoff, limit)
             ).fetchall()
             return [dict(row) for row in rows]
     
@@ -251,7 +281,7 @@ class JobStorage:
                 values.append(1 if is_processing_queue else 0)
             
             if updates:
-                updates.append("last_event_at = CURRENT_TIMESTAMP")
+                updates.append("last_updated = CURRENT_TIMESTAMP")
                 values.append(1)  # For WHERE id = ?
                 
                 query = f"UPDATE worker_state SET {', '.join(updates)} WHERE id = ?"
@@ -280,6 +310,11 @@ class JobStorage:
         with self._get_conn() as conn:
             rows = conn.execute("SELECT key, value FROM ui_config").fetchall()
             return {row[0]: row[1] for row in rows}
+
+    def clear_all_history(self):
+        """Delete all jobs that are not running or queued."""
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM jobs WHERE status NOT IN ('running', 'queued')")
 
     # Watcher management
     def add_watched_collection(self, identifier: str, watch_type: str, interval_seconds: int = 86400) -> int:
@@ -324,4 +359,31 @@ class JobStorage:
             conn.execute(
                 "UPDATE watched_collections SET last_checked = CURRENT_TIMESTAMP WHERE identifier = ?",
                 (identifier,)
+            )
+    
+    def reset_stuck_jobs(self):
+        """Reset any jobs that were left running when the server stopped."""
+        with self._get_conn() as conn:
+            # Find running jobs
+            cursor = conn.execute("SELECT id, identifier FROM jobs WHERE status = 'running'")
+            stuck_jobs = cursor.fetchall()
+            
+            if stuck_jobs:
+                print(f"Found {len(stuck_jobs)} stuck jobs. Resetting to queued.")
+                conn.execute("UPDATE jobs SET status = 'queued', started_at = NULL, pid = NULL WHERE status = 'running'")
+
+            queued_count = conn.execute("SELECT COUNT(*) FROM jobs WHERE status = 'queued'").fetchone()[0]
+            should_process_queue = 1 if queued_count > 0 else 0
+
+            # Reset worker state and resume queue only if work is actually queued
+            conn.execute(
+                """
+                UPDATE worker_state
+                SET active_job_id = NULL,
+                    active_pid = NULL,
+                    is_processing_queue = ?,
+                    last_updated = CURRENT_TIMESTAMP
+                WHERE id = 1
+                """,
+                (should_process_queue,)
             )

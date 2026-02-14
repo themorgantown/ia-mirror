@@ -11,6 +11,36 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Tuple
 
+_IA_ARCHIVE_SESSION = None
+
+
+def _build_ia_session_config() -> dict | None:
+    """Build a minimal internetarchive session config from env.
+
+    We intentionally do NOT rely on parsing ia.ini here because some config
+    file shapes can fail validation in newer internetarchive releases.
+    """
+    cfg: dict = {}
+
+    ua_suffix = os.getenv("IA_USER_AGENT_SUFFIX")
+    if ua_suffix:
+        cfg.setdefault("general", {})["user_agent_suffix"] = ua_suffix
+
+    access = os.getenv("IA_ACCESS_KEY")
+    secret = os.getenv("IA_SECRET_KEY")
+    if access and secret:
+        cfg.setdefault("s3", {})["access"] = access
+        cfg.setdefault("s3", {})["secret"] = secret
+
+    return cfg or None
+
+
+def get_archive_session() -> "internetarchive.session.ArchiveSession":
+    global _IA_ARCHIVE_SESSION
+    if _IA_ARCHIVE_SESSION is None:
+        _IA_ARCHIVE_SESSION = internetarchive.get_session(config=_build_ia_session_config())
+    return _IA_ARCHIVE_SESSION
+
 REPORT_FILENAME = "report.json"
 
 _running_processes = []
@@ -204,7 +234,7 @@ def get_manifest(identifier: str, dest: Path, force_update: bool = False) -> dic
     if refresh:
         logging.info("%s metadata for %s...", "Forcing refresh of" if force_update else "Fetching", identifier)
         try:
-            item = internetarchive.get_item(identifier)
+            item = internetarchive.get_item(identifier, archive_session=get_archive_session())
             # Use item_metadata['files'] which is a list of dicts
             manifest = {}
             for f in item.item_metadata.get('files', []):
@@ -584,7 +614,7 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
     do_checksum = (verify_mode == "checksum")
     
     try:
-        item = internetarchive.get_item(identifier)
+        item = internetarchive.get_item(identifier, archive_session=get_archive_session())
         ia_file = item.get_file(filename)
         
         # Use a temporary file for downloading to avoid partial files on failure
@@ -843,6 +873,43 @@ def perform_sync(dest: Path, manifests: dict, dry_run: bool) -> List[str]:
 
     return orphans
 
+def handle_watch_command(args):
+    """Handle watch subcommands."""
+    import sys
+    import os
+    # Determine database path from environment or default
+    db_path = os.getenv("WEB_DB_PATH", "/downloads/.ia-mirror/ui.db")
+    try:
+        from .web.storage import JobStorage
+    except ImportError:
+        # Try absolute import
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from web.storage import JobStorage
+
+    storage = JobStorage(db_path)
+
+    if args.watch_subcommand == "add":
+        storage.add_watched_collection(args.collection, args.type, args.interval)
+        print(f"Added collection '{args.collection}' to watch list (type: {args.type}, interval: {args.interval}s)")
+    elif args.watch_subcommand == "remove":
+        storage.remove_watched_collection(args.collection)
+        print(f"Removed collection '{args.collection}' from watch list")
+    elif args.watch_subcommand == "list":
+        collections = storage.get_watched_collections()
+        if not collections:
+            print("No watched collections.")
+            return
+        print("Watched collections:")
+        for col in collections:
+            print(f"  {col['identifier']} (type: {col['watch_type']}, interval: {col['interval_seconds']}s, last checked: {col['last_checked']})")
+    elif args.watch_subcommand == "run":
+        # Trigger immediate check (simulate watcher loop)
+        # For now, just print a message
+        print("Watch run not yet implemented. Use the web UI watcher.")
+    else:
+        print(f"Unknown watch subcommand: {args.watch_subcommand}")
+        sys.exit(1)
+
 def main():
 
     inject_env_args()
@@ -856,52 +923,140 @@ def main():
         health_server.start()
         atexit.register(health_server.stop)
 
-    ap = argparse.ArgumentParser(description="Parallel IA downloader with resume + mirror")
-    ap.add_argument("identifier", nargs='?', help="Item or collection ID (required unless --print-effective-config)")
-    ap.add_argument("--destdir", help="Destination directory (default: ./<identifier>)")
-    # ...existing code...
-    ap.add_argument("-g","--glob", action="append", default=[], help="Glob pattern; can be repeated or comma-separated (default: all files)")
-    ap.add_argument("-x","--exclude", action="append", default=[], help="Exclude glob; can be repeated or comma-separated")
-    ap.add_argument("-f","--format", dest="formats", action="append", default=[], help="Restrict to extensions (e.g., mp3,flac); can be repeated or comma-separated")
-    ap.add_argument("--source", help="Filter by source type: original, derivative, or metadata")
-    ap.add_argument("--on-the-fly", action="store_true", help="Enable dynamic zip generation")
-    ap.add_argument("--xml-names", action="store_true", help="Use filenames from metadata XML")
-    ap.add_argument("--json-output", action="store_true", help="Output progress events as JSON lines")
-    ap.add_argument("--ignore-existing", action="store_true", help="Skip files if they exist without size/checksum check")
-    ap.add_argument("--no-directories", action="store_true", help="Flatten download into a single directory")
-    ap.add_argument("--sync", action="store_true", help="Advanced Sync: delete local files not present in remote IA item")
-    ap.add_argument("-j","--concurrency", type=int, default=5, help="Parallel workers (default 5)")
-    ap.add_argument("--retries", type=int, default=5, help="Retries per file")
-    ap.add_argument("--progress-timeout", type=int, default=900, help="No-progress timeout (s)")
-    ap.add_argument("--max-timeout", type=int, default=7200, help="Absolute timeout per file (s)")
-    ap.add_argument("--collection", action="store_true", help="Treat identifier as collection")
-    ap.add_argument("-resumefolders", "--resumefolders", action="store_true",
-                    help="Only consider .zip files and skip any zip whose folder already exists in destdir")
-    ap.add_argument("--dry-run", action="store_true", help="Show what would be downloaded/skipped and exit")
-    ap.add_argument("--verify-only", action="store_true", help="Only verify existing files")
-    ap.add_argument("--verify-mode", choices=["exists", "size", "checksum"], help="Verification level: exists, size (default), or checksum")
-    ap.add_argument("--checksum", action="store_true", help="Enable checksum verification (alias for --verify-mode checksum)")
-    ap.add_argument("--ia-path", help="Path to ia executable")
-    ap.add_argument("--estimate-only", action="store_true", help="Only output size/time/cost estimates and exit")
-    ap.add_argument("--max-mbps", type=float, default=0.0, help="Throttle max bandwidth (Mbps, approx). Only active if set.")
-    ap.add_argument("--assumed-mbps", type=float, default=float(os.environ.get("IA_ASSUMED_MBPS", "100")), help="Assumed bandwidth for ETA if uncapped")
-    ap.add_argument("--no-lock", action="store_true", help="Do not create a lockfile in destdir (unsafe for concurrent runs)")
-    ap.add_argument("--no-backoff", action="store_true", help="Disable polite exponential backoff on 429/5xx errors")
-    ap.add_argument("--backoff-base", type=float, default=float(os.environ.get("IA_BACKOFF_BASE", "2")), help="Base backoff seconds (default 2)")
-    ap.add_argument("--backoff-max", type=float, default=float(os.environ.get("IA_BACKOFF_MAX", "60")), help="Max backoff seconds (default 60)")
-    ap.add_argument("--backoff-multiplier", type=float, default=float(os.environ.get("IA_BACKOFF_MULTIPLIER", "2")), help="Backoff multiplier (default 2)")
-    ap.add_argument("--backoff-jitter", type=float, default=float(os.environ.get("IA_BACKOFF_JITTER", "0.25")), help="Jitter fraction 0..1 (default 0.25)")
-    ap.add_argument("--cost-per-gb", type=float, default=float(os.environ.get("IA_COST_PER_GB", "0")), help="Optional cost per GB (USD) for estimate")
-    ap.add_argument("--dryrun-mbps", type=float, default=500.0, help="Simulation speed (Mbps) for --dry-run dynamic ETA (default 500 Mbps)")
-    ap.add_argument("--speed-sample-interval", type=int, default=30, help="Interval in seconds for aggregate speed sampling (default 30)")
-    ap.add_argument("--force-metadata-update", action="store_true", help="Force refresh of local metadata manifest")
-    ap.add_argument("--print-effective-config", action="store_true", help="Print derived configuration (env + args) and exit")
-    ap.add_argument("--use-batch-source", action="store_true", help="Read batch source CSV (two columns: source identifier, destination path)")
-    ap.add_argument("--batch-source-path", default=os.environ.get("IA_BATCH_SOURCE_PATH", "batch_source.csv"), help="Path to batch_source.csv (default ./batch_source.csv)")
+    # Normalize argv for backward compatibility: if first argument is not a known subcommand, insert "mirror"
+    import sys
+    KNOWN_SUBCOMMANDS = {"mirror", "watch", "batch", "advanced", "help"}
+    if len(sys.argv) > 1 and sys.argv[1] not in KNOWN_SUBCOMMANDS:
+        # Insert "mirror" subcommand before the identifier
+        sys.argv.insert(1, "mirror")
+
+    ap = argparse.ArgumentParser(description="Parallel IA downloader with resume + mirror", add_help=False)
+    ap.add_argument("--help", action="store_true", help="Show basic help")
+    ap.add_argument("--help-advanced", action="store_true", help="Show advanced options")
+    ap.add_argument("--help-all", action="store_true", help="Show all options")
+    subparsers = ap.add_subparsers(dest="command", title="commands", help="Available commands")
+
+    # Mirror command (default)
+    mirror_parser = subparsers.add_parser("mirror", help="Mirror an item or collection (default command)", add_help=False)
+    mirror_parser.add_argument("identifier", nargs='?', help="Item or collection ID (required unless --print-effective-config)")
+    # Basic options group
+    basic_group = mirror_parser.add_argument_group("Basic Options")
+    basic_group.add_argument("--destdir", help="Destination directory (default: ./<identifier>)")
+    basic_group.add_argument("-g","--glob", action="append", default=[], help="Glob pattern; can be repeated or comma-separated (default: all files)")
+    basic_group.add_argument("-x","--exclude", action="append", default=[], help="Exclude glob; can be repeated or comma-separated")
+    basic_group.add_argument("-f","--format", dest="formats", action="append", default=[], help="Restrict to extensions (e.g., mp3,flac); can be repeated or comma-separated")
+    basic_group.add_argument("-j","--concurrency", type=int, default=4, help="Parallel workers (default 4)")
+    basic_group.add_argument("--collection", action="store_true", help="Treat identifier as collection")
+    basic_group.add_argument("--verify-mode", choices=["exists", "size", "checksum"], help="Verification level: exists, size (default), or checksum")
+    basic_group.add_argument("--checksum", action="store_true", help="Enable checksum verification (alias for --verify-mode checksum)")
+    basic_group.add_argument("--sync", action="store_true", help="Advanced Sync: delete local files not present in remote IA item")
+    basic_group.add_argument("--resume", action="store_true", default=True, help="Enable resume capability (default: enabled)")
+    basic_group.add_argument("--dry-run", action="store_true", help="Show what would be downloaded/skipped and exit")
+    basic_group.add_argument("--verify-only", action="store_true", help="Only verify existing files")
+    basic_group.add_argument("--estimate-only", action="store_true", help="Only output size/time/cost estimates and exit")
+
+    # Advanced options group
+    advanced_group = mirror_parser.add_argument_group("Advanced Options")
+    advanced_group.add_argument("--source", help="Filter by source type: original, derivative, or metadata")
+    advanced_group.add_argument("--on-the-fly", action="store_true", help="Enable dynamic zip generation")
+    advanced_group.add_argument("--xml-names", action="store_true", help="Use filenames from metadata XML")
+    advanced_group.add_argument("--json-output", action="store_true", help="Output progress events as JSON lines")
+    advanced_group.add_argument("--ignore-existing", action="store_true", help="Skip files if they exist without size/checksum check")
+    advanced_group.add_argument("--no-directories", action="store_true", help="Flatten download into a single directory")
+    advanced_group.add_argument("--retries", type=int, default=5, help="Retries per file")
+    advanced_group.add_argument("--progress-timeout", type=int, default=900, help="No-progress timeout (s)")
+    advanced_group.add_argument("--max-timeout", type=int, default=7200, help="Absolute timeout per file (s)")
+    advanced_group.add_argument("-resumefolders", "--resumefolders", action="store_true",
+                        help="Only consider .zip files and skip any zip whose folder already exists in destdir")
+    advanced_group.add_argument("--max-mbps", type=float, default=0.0, help="Throttle max bandwidth (Mbps, approx). Only active if set.")
+    advanced_group.add_argument("--assumed-mbps", type=float, default=float(os.environ.get("IA_ASSUMED_MBPS", "100")), help="Assumed bandwidth for ETA if uncapped")
+    advanced_group.add_argument("--no-lock", action="store_true", help="Do not create a lockfile in destdir (unsafe for concurrent runs)")
+    advanced_group.add_argument("--no-backoff", action="store_true", help="Disable polite exponential backoff on 429/5xx errors")
+    advanced_group.add_argument("--backoff-base", type=float, default=float(os.environ.get("IA_BACKOFF_BASE", "2")), help="Base backoff seconds (default 2)")
+    advanced_group.add_argument("--backoff-max", type=float, default=float(os.environ.get("IA_BACKOFF_MAX", "60")), help="Max backoff seconds (default 60)")
+    advanced_group.add_argument("--backoff-multiplier", type=float, default=float(os.environ.get("IA_BACKOFF_MULTIPLIER", "2")), help="Backoff multiplier (default 2)")
+    advanced_group.add_argument("--backoff-jitter", type=float, default=float(os.environ.get("IA_BACKOFF_JITTER", "0.25")), help="Jitter fraction 0..1 (default 0.25)")
+    advanced_group.add_argument("--cost-per-gb", type=float, default=float(os.environ.get("IA_COST_PER_GB", "0")), help="Optional cost per GB (USD) for estimate")
+
+    # Expert options group
+    expert_group = mirror_parser.add_argument_group("Expert Options")
+    expert_group.add_argument("--ia-path", help="Path to ia executable")
+    expert_group.add_argument("--dryrun-mbps", type=float, default=500.0, help="Simulation speed (Mbps) for --dry-run dynamic ETA (default 500 Mbps)")
+    expert_group.add_argument("--speed-sample-interval", type=int, default=30, help="Interval in seconds for aggregate speed sampling (default 30)")
+    expert_group.add_argument("--force-metadata-update", action="store_true", help="Force refresh of local metadata manifest")
+    expert_group.add_argument("--print-effective-config", action="store_true", help="Print derived configuration (env + args) and exit")
+    expert_group.add_argument("--use-batch-source", action="store_true", help="Read batch source CSV (two columns: source identifier, destination path)")
+    expert_group.add_argument("--batch-source-path", default=os.environ.get("IA_BATCH_SOURCE_PATH", "batch_source.csv"), help="Path to batch_source.csv (default ./batch_source.csv)")
+
+    # Watch command
+    watch_parser = subparsers.add_parser("watch", help="Watch a collection for new items")
+    watch_subparsers = watch_parser.add_subparsers(dest="watch_subcommand", title="watch commands", help="Watch subcommands")
+
+    # Watch add
+    watch_add = watch_subparsers.add_parser("add", help="Add a collection to watch")
+    watch_add.add_argument("collection", help="Collection ID to watch")
+    watch_add.add_argument("--interval", type=int, default=3600, help="Check interval in seconds (default: 3600)")
+    watch_add.add_argument("--type", choices=["new", "future", "all_future"], default="new", help="Watch type: new items only, future items, or all future items (default: new)")
+
+    # Watch remove
+    watch_remove = watch_subparsers.add_parser("remove", help="Remove a collection from watch")
+    watch_remove.add_argument("collection", help="Collection ID to stop watching")
+
+    # Watch list
+    watch_list = watch_subparsers.add_parser("list", help="List watched collections")
+
+    # Watch run (trigger immediate check)
+    watch_run = watch_subparsers.add_parser("run", help="Trigger immediate check of watched collections")
+    watch_run.add_argument("--collection", help="Specific collection to check (optional)")
+
+    # Batch command (alternative to --use-batch-source)
+    batch_parser = subparsers.add_parser("batch", help="Process batch downloads from CSV")
+    batch_parser.add_argument("batch_file", help="CSV file with source and destdir columns")
+    batch_parser.add_argument("--concurrency", type=int, default=4, help="Parallel workers per item")
+
+    # Advanced command (show advanced usage)
+    advanced_cmd_parser = subparsers.add_parser("advanced", help="Show advanced usage information")
+
+    # Parse arguments
     args = ap.parse_args()
-    
-    global _json_output
-    _json_output = args.json_output
+
+    # Handle global help flags
+    if args.help:
+        ap.print_help()
+        sys.exit(0)
+    if args.help_advanced:
+        # Print help with basic and advanced groups only
+        # We'll implement custom help later
+        ap.print_help()
+        sys.exit(0)
+    if args.help_all:
+        ap.print_help()
+        sys.exit(0)
+
+    # If no command specified (should not happen due to normalization), default to mirror
+    if not args.command:
+        args.command = "mirror"
+
+    # Dispatch to command handlers
+    if args.command == "mirror":
+        global _json_output
+        _json_output = args.json_output
+        # Continue with mirror logic (rest of main function)
+    elif args.command == "watch":
+        handle_watch_command(args)
+    elif args.command == "batch":
+        print("Batch command not yet implemented. Use --use-batch-source flag with mirror command.")
+        sys.exit(1)
+    elif args.command == "advanced":
+        print("Advanced usage information:")
+        print("  Use 'ia-mirror mirror --help' for mirror options")
+        print("  Use 'ia-mirror watch --help' for watch options")
+        print("  Use 'ia-mirror batch --help' for batch options")
+        print("  All existing flags remain supported for backward compatibility.")
+        sys.exit(0)
+    else:
+        print(f"Unknown command: {args.command}")
+        sys.exit(1)
 
     # Resolve verify mode
     if not args.verify_mode:
@@ -1245,10 +1400,11 @@ def main():
         print("❌ No matching files.", file=sys.stderr)
         return 1
     
-    # Initialize status with existing files properly categorized
-    if not status["pending"]:
+    # Initialize/rebuild status with existing files properly categorized.
+    # In checksum mode, always re-verify files to catch corruption.
+    if (not status.get("pending")) or args.verify_mode == "checksum":
         status["pending"] = []
-        status["done"] = status.get("done", [])
+        status["done"] = []
         
         for item, fname in job_list:
             key = f"{item}/{fname}"

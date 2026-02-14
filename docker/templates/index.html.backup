@@ -62,13 +62,43 @@
         <!-- Navigation Tabs -->
         <ul class="nav nav-pills nav-modern mb-4 justify-content-center" id="main-nav">
             <li class="nav-item">
-                <a class="nav-link active" href="#" data-tab="dashboard">Download</a>
+                <a class="nav-link active" href="#" data-tab="dashboard">Dashboard</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" data-tab="files">Files</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" data-tab="watching">Watching</a>
             </li>
         </ul>
 
         <!-- Dashboard Tab -->
         <div id="view-dashboard" class="view-section">
+            <div id="creds-warning" class="alert alert-modern alert-danger d-none mb-4" role="alert">
+                <div class="d-flex align-items-center gap-3">
+                    <div class="alert-icon">⚠️</div>
+                    <div>
+                        <strong>Credentials Missing</strong>
+                        <div class="text-sm opacity-90">IA_ACCESS_KEY and IA_SECRET_KEY are not set. Downloads may fail
+                            for
+                            non-public items.</div>
+                    </div>
+                </div>
+            </div>
 
+            <div id="donation-alert" class="alert alert-modern alert-info alert-dismissible fade show d-none mb-4"
+                role="alert">
+                <div class="d-flex align-items-center gap-3">
+                    <div class="alert-icon">💎</div>
+                    <div>
+                        <span id="donation-message">You've downloaded 1GB from the Internet Archive!</span>
+                        <a href="https://archive.org/donate/" target="_blank" class="fw-bold ms-1 text-inherit">Donate
+                            Now
+                            →</a>
+                    </div>
+                </div>
+                <button type="button" class="btn-close-custom" data-bs-dismiss="alert" aria-label="Close">×</button>
+            </div>
 
             <!-- Single Column Layout -->
             <div class="mx-auto" style="max-width: 800px;">
@@ -78,6 +108,16 @@
                     <div class="card-body p-4">
                         <h2 class="h5 font-heading fw-bold mb-4">Start New Job</h2>
 
+                        <div class="mb-4">
+                            <label
+                                class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-2">Destination
+                                Directory</label>
+                            <div class="input-group input-group-modern">
+                                <input type="text" class="form-control font-monospace text-sm" id="destination"
+                                    value="/downloads" placeholder="/downloads">
+                                <button class="btn btn-secondary-modern" type="button" id="browse-btn">Browse</button>
+                            </div>
+                        </div>
 
                         <div class="mb-4">
                             <div class="d-flex justify-content-between align-items-center mb-2">
@@ -188,41 +228,31 @@
                                 </svg>
                                 Stop
                             </button>
+                            <button type="button"
+                                class="btn btn-secondary-modern dropdown-toggle px-3"
+                                data-bs-toggle="dropdown" aria-expanded="false" title="Advanced Options">
+                                <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <circle cx="12" cy="12" r="1" fill="currentColor"/>
+                                    <circle cx="12" cy="5" r="1" fill="currentColor"/>
+                                    <circle cx="12" cy="19" r="1" fill="currentColor"/>
+                                </svg>
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end shadow-soft border-0" style="z-index: 2000;">
+                                <li>
+                                    <h6
+                                        class="dropdown-header text-xs text-uppercase tracking-wider fw-bold text-secondary">
+                                        Collection Watcher</h6>
+                                </li>
+                                <li><button class="dropdown-item py-2 text-sm" id="watch-new-btn">Watch: New Items
+                                        Only</button></li>
+                                <li><button class="dropdown-item py-2 text-sm" id="watch-future-btn">Watch: Future
+                                        Releases Only</button></li>
+                                <li><button class="dropdown-item py-2 text-sm" id="watch-all-btn">Watch: All +
+                                        Future Releases</button></li>
+                            </ul>
                             <button class="btn btn-ghost" id="clear-btn">Clear</button>
                         </div>
                         <div id="action-status" aria-live="polite"></div>
-
-                        <div class="mt-4 pt-3 border-top border-light-subtle">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <label class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-0">Destination</label>
-                                <span class="text-xs text-secondary">Resolved Path</span>
-                            </div>
-                            <div id="destination-path" class="console-destination">/downloads</div>
-
-                            <div class="d-flex justify-content-between align-items-center mt-3 mb-2">
-                                <label class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-0">Live Console Progress</label>
-                                <span id="ascii-progress-percent" class="text-xs fw-bold text-primary">0%</span>
-                            </div>
-                            <div class="ascii-console-box" role="status" aria-live="polite" aria-atomic="true">
-                                <pre id="ascii-progress-text" class="ascii-console-text">+------------------------------------------+
- IA-MIRROR PROGRESS
-------------------------------------------+
- STATUS         : idle
- FILES REMAIN   : --
- TIME REMAIN    : --:--
- DATA REMAIN    : --
- PROGRESS       : [░░░░░░░░░░░░░░░░░░░░] 0%
-+------------------------------------------+</pre>
-                            </div>
-
-                            <div class="d-flex justify-content-between align-items-center mt-3 mb-2">
-                                <label class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-0">Last Downloads (7 days)</label>
-                                <span id="recent-downloads-count" class="text-xs text-secondary">0</span>
-                            </div>
-                            <div id="recent-downloads" class="recent-downloads-list">
-                                <div class="text-xs text-secondary">No completed downloads in the last 7 days.</div>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
@@ -248,21 +278,170 @@
                                     <span id="bytes-and-eta">0 B • --:--</span>
                                 </div>
                             </div>
-                            <div class="d-flex flex-column align-items-end gap-2">
-                                <span id="job-status-badge" class="badge badge-pill bg-primary">RUNNING</span>
-                                <button class="btn btn-xs btn-outline-secondary" id="view-log-btn" style="font-size: 0.7rem; padding: 2px 6px;">View Log</button>
+                            <span id="job-status-badge" class="badge badge-pill bg-primary">RUNNING</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- File Checklist Card -->
+                <div class="card card-modern shadow-soft mb-4" id="files-section"
+                    style="display:none; max-height: 400px; overflow: hidden;">
+                    <div
+                        class="card-header border-bottom border-light-subtle bg-transparent p-3 d-flex justify-content-between align-items-center">
+                        <h6 class="mb-0 font-heading fw-bold text-sm">Transferring Files</h6>
+                    </div>
+                    <div class="card-body p-0 overflow-auto" style="max-height: 350px;">
+                        <ul class="list-group list-group-flush list-group-modern" id="file-list">
+                            <!-- Files inserted here -->
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Queue Section -->
+                <div class="card card-modern shadow-soft mb-4" id="queue-section" style="display:none;">
+                    <div
+                        class="card-header border-bottom border-light-subtle bg-transparent p-3 d-flex justify-content-between align-items-center">
+                        <h6 class="mb-0 font-heading fw-bold">Queue</h6>
+                        <span class="badge badge-pill badge-secondary" id="queue-count">0</span>
+                    </div>
+                    <div class="list-group list-group-flush list-group-modern" id="queue-list">
+                        <!-- Queue items -->
+                    </div>
+                </div>
+
+                <!-- Logs Card -->
+                <div class="card card-modern shadow-soft mb-4" id="logs-section" style="display: none;">
+                    <button
+                        class="btn btn-link w-100 text-start p-3 card-header bg-transparent border-0 d-flex justify-content-between align-items-center text-decoration-none collapsed"
+                        type="button" data-bs-toggle="collapse" data-bs-target="#logs-collapse" id="logs-toggle">
+                        <span class="font-heading fw-bold text-dark text-sm">Logs</span>
+                        <div class="d-flex text-xs text-secondary gap-2 align-items-center">
+                            <span class="badge bg-secondary-subtle text-dark border log-status">Hidden</span>
+                            <span class="icon-chevron">▼</span>
+                        </div>
+                    </button>
+
+                    <div class="collapse" id="logs-collapse">
+                        <div class="card-body p-0 d-flex flex-column" style="height: 300px;">
+                            <div
+                                class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom border-light-subtle bg-light-subtle">
+                                <div class="form-check form-switch form-check-sm">
+                                    <input class="form-check-input" type="checkbox" id="auto-scroll" checked>
+                                    <label class="form-check-label text-xs fw-medium"
+                                        for="auto-scroll">Auto-scroll</label>
+                                </div>
+                                <button class="btn btn-xs btn-ghost text-secondary" id="download-logs-btn"
+                                    title="Download Logs">
+                                    <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                                        <path
+                                            d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z" />
+                                        <path
+                                            d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z" />
+                                    </svg>
+                                    Download
+                                </button>
+                            </div>
+                            <div class="logs-container flex-grow-1 p-3 font-monospace text-xs" id="logs-container"
+                                style="overflow-y: auto;">
+                                <div class="text-muted opacity-50">[System Ready]</div>
                             </div>
                         </div>
                     </div>
                 </div>
 
-
-
-
+                <!-- History -->
+                <div class="card card-modern shadow-soft mb-4" id="history-card" style="display:none;">
+                    <button
+                        class="btn btn-link w-100 text-start p-3 card-header bg-transparent border-0 d-flex justify-content-between align-items-center text-decoration-none collapsed"
+                        type="button" data-bs-toggle="collapse" data-bs-target="#history-section">
+                        <span class="font-heading fw-bold text-dark">Job History</span>
+                        <span class="badge badge-pill badge-light text-dark border" id="history-count">0</span>
+                    </button>
+                    <div class="collapse show" id="history-section">
+                        <div id="history-list" class="list-group list-group-flush list-group-modern">
+                            <!-- History items injected here -->
+                            <div class="text-muted text-center p-4 text-sm">No history yet</div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
+        <!-- Files Tab -->
+        <div id="view-files" class="view-section" style="display: none;">
+            <!-- File Browser Card -->
+            <div class="card card-modern shadow-soft mb-4">
+                <div
+                    class="card-header border-bottom border-light-subtle bg-transparent p-3 d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-sm btn-ghost btn-icon" id="fb-up-btn" title="Go Up">
+                            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M5 10l7-7m0 0l7 7m-7-7v18"></path>
+                            </svg>
+                        </button>
+                        <nav aria-label="breadcrumb">
+                            <ol class="breadcrumb mb-0 text-sm" id="fb-breadcrumbs">
+                                <li class="breadcrumb-item active">/</li>
+                            </ol>
+                        </nav>
+                    </div>
+                    <button class="btn btn-sm btn-ghost text-secondary" id="fb-refresh-btn" title="Refresh">
+                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15">
+                            </path>
+                        </svg>
+                    </button>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle mb-0 text-sm">
+                            <thead class="bg-light-subtle text-xs fw-bold text-uppercase text-secondary tracking-wider">
+                                <tr>
+                                    <th class="ps-4 py-3" style="width: 50%;">Name</th>
+                                    <th class="py-3">Size</th>
+                                    <th class="py-3">Date</th>
+                                    <th class="pe-4 py-3 text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="fb-list">
+                                <!-- Files injected here -->
+                                <tr>
+                                    <td colspan="4" class="text-center py-5 text-muted">Loading...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
 
+        <!-- Watching Tab -->
+        <div id="view-watching" class="view-section" style="display: none;">
+            <div class="mx-auto" style="max-width: 800px;">
+                <div class="card card-modern shadow-soft mb-4">
+                    <div
+                        class="card-header border-bottom border-light-subtle bg-transparent p-3 d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="mb-0 font-heading fw-bold">Watched Collections</h6>
+                            <div class="text-xs text-secondary mt-1">Collections are checked every 24 hours.</div>
+                        </div>
+                        <button class="btn btn-sm btn-ghost text-secondary" id="refresh-watching-btn" title="Refresh">
+                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15">
+                                </path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="list-group list-group-flush list-group-modern" id="watching-list">
+                        <!-- Watching items injected here -->
+                        <div class="text-muted text-center p-5 text-sm">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
     </main>
 
@@ -283,10 +462,9 @@
     </div>
 
     <!-- Dry Run Modal -->
-    <!-- Dry Run Confirmation Modal -->
-    <div class="modal fade" id="dryRunModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-theme="dark">
+    <div class="modal fade" id="dryRunModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
         <div class="modal-dialog modal-lg modal-dialog-centered">
-            <div class="modal-content border-0 shadow-lg" style="background-color: var(--color-surface); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);">
+            <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header border-bottom border-light-subtle">
                     <h5 class="modal-title fw-bold font-heading">Dry Run Summary</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -294,19 +472,19 @@
                 <div class="modal-body p-4">
                     <div class="row g-4 mb-4">
                         <div class="col-4">
-                            <div class="p-3 bg-white bg-opacity-10 rounded-3 text-center">
+                            <div class="p-3 bg-light-subtle rounded-3 text-center">
                                 <div class="text-xs text-secondary text-uppercase fw-bold mb-1">Files</div>
                                 <div class="h3 mb-0 fw-bold text-primary" id="dry-total-files">0</div>
                             </div>
                         </div>
                         <div class="col-4">
-                            <div class="p-3 bg-white bg-opacity-10 rounded-3 text-center">
+                            <div class="p-3 bg-light-subtle rounded-3 text-center">
                                 <div class="text-xs text-secondary text-uppercase fw-bold mb-1">Size</div>
                                 <div class="h3 mb-0 fw-bold text-primary" id="dry-total-size">0 MB</div>
                             </div>
                         </div>
                         <div class="col-4">
-                            <div class="p-3 bg-white bg-opacity-10 rounded-3 text-center">
+                            <div class="p-3 bg-light-subtle rounded-3 text-center">
                                 <div class="text-xs text-secondary text-uppercase fw-bold mb-1">Est. Time</div>
                                 <div class="h3 mb-0 fw-bold text-success" id="dry-est-time">0s</div>
                             </div>
@@ -315,12 +493,12 @@
 
                     <h6 class="text-xs fw-bold text-uppercase text-secondary mb-3 tracking-wider">File List (<span
                             id="dry-file-count">0</span>)</h6>
-                    <div class="border border-white border-opacity-10 rounded-2" style="max-height: 300px; overflow-y: auto; background-color: rgba(0,0,0,0.2);">
-                        <table class="table table-sm table-dark table-hover mb-0 text-sm">
-                            <thead class="sticky-top" style="background-color: var(--color-surface);">
+                    <div class="border rounded-2 bg-white" style="max-height: 300px; overflow-y: auto;">
+                        <table class="table table-sm table-hover mb-0 text-sm">
+                            <thead class="bg-light sticky-top">
                                 <tr>
-                                    <th class="ps-3 py-2 border-bottom border-white border-opacity-10">Filename</th>
-                                    <th class="pe-3 py-2 text-end border-bottom border-white border-opacity-10">Size</th>
+                                    <th class="ps-3 py-2">Filename</th>
+                                    <th class="pe-3 py-2 text-end">Size</th>
                                 </tr>
                             </thead>
                             <tbody id="dry-file-list">
@@ -330,82 +508,9 @@
                     </div>
                 </div>
                 <div class="modal-footer border-top border-light-subtle">
-                    <button type="button" class="btn btn-ghost text-secondary px-4" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary-modern px-5" id="confirm-download-btn">
-                        Confirm Download
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Log Viewer Modal -->
-    <div class="modal fade" id="logModal" tabindex="-1" aria-hidden="true" data-bs-theme="dark">
-        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
-            <div class="modal-content border-0 shadow-lg" style="background-color: var(--color-surface); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);">
-                <div class="modal-header border-bottom border-light-subtle">
-                    <h5 class="modal-title fw-bold font-heading" id="log-modal-title">Job Log</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body p-0" style="background-color: rgba(0,0,0,0.2);">
-                    <pre class="m-0 p-4 font-monospace text-xs text-white-50" id="log-content"
-                        style="white-space: pre-wrap; word-break: break-all; min-height: 200px;"></pre>
-                </div>
-                <div class="modal-footer border-top border-light-subtle">
-                    <button type="button" class="btn btn-ghost text-secondary px-4" data-bs-dismiss="modal">Close</button>
-                    <button type="button" class="btn btn-primary-modern px-4" id="refresh-log-btn">
-                        Refresh Logs
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Settings Modal -->
-    <div class="modal fade" id="settingsModal" tabindex="-1" aria-hidden="true" data-bs-theme="dark">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content border-0 shadow-lg" style="background-color: var(--color-surface); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);">
-                <div class="modal-header border-bottom border-light-subtle">
-                    <h5 class="modal-title fw-bold font-heading">Global Settings</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body p-4">
-                    <div class="mb-4">
-                        <label class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-3">Authentication</label>
-                        <div class="p-3 mb-3 rounded-3 border border-light-subtle" style="background: rgba(15, 23, 42, 0.35);">
-                            <div class="text-xs fw-bold text-uppercase tracking-wider text-secondary mb-2">Preferred Method</div>
-                            <p class="mb-2 small text-secondary">Run <code>ia configure</code> on your host, then mount your host IA config into the container:</p>
-                            <p class="mb-0 small"><code>-v ~/.config/ia:/home/app/.config/ia:ro</code></p>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label text-xs text-secondary">IA Access Key</label>
-                            <input type="password" class="form-control form-control-modern" id="settings-access-key" placeholder="••••••••••••••••">
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label text-xs text-secondary">IA Secret Key</label>
-                            <input type="password" class="form-control form-control-modern" id="settings-secret-key" placeholder="••••••••••••••••">
-                        </div>
-                        <p class="mb-0 small text-secondary">Use key fields below only if host config mount is not available.</p>
-                    </div>
-                    
-                    <div class="mb-4">
-                        <label class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-3">System Defaults</label>
-                        <div class="mb-3">
-                            <label class="form-label text-xs text-secondary">Default Concurrency</label>
-                            <input type="number" class="form-control form-control-modern" id="settings-concurrency" min="1" max="16" value="4">
-                        </div>
-                    </div>
-
-                    <div class="pt-3 border-top border-light-subtle text-center">
-                        <button type="button" class="btn btn-outline-danger btn-sm px-4" id="clear-history-btn" style="border-radius: var(--radius-md);">
-                            Clear Download History
-                        </button>
-                    </div>
-                </div>
-                <div class="modal-footer border-top border-light-subtle">
-                    <button type="button" class="btn btn-ghost text-secondary px-4" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary-modern px-5" id="save-settings-btn">
-                        Save Changes
+                    <button type="button" class="btn btn-ghost text-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary-modern px-4" id="confirm-download-btn">
+                        <span>Confirm Download</span>
                     </button>
                 </div>
             </div>

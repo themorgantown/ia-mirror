@@ -35,19 +35,22 @@ docker run --rm \
   - Create an account (https://archive.org/account/login).
   - Generate or locate your access key and secret at https://archive.org/account/s3.php.
 
-2. (Host config method) On your host run:
-  ia configure
-  This creates ~/.config/ia/ia.ini. Then run the container mounting it read-only:
-  -v "$HOME/.config/ia:/home/app/.config/ia:ro"
+2. Preferred (seamless): configure IA once on your host:
+  - Run: `ia configure`
+  - This writes `~/.config/ia/ia.ini` on your host.
+  - Start containers with this mount (read-only):
+    - `-v "$HOME/.config/ia:/home/app/.config/ia:ro"`
+  - Result: the Web UI and all jobs reuse your host auth without retyping keys.
 
-3. (Env var method – recommended for ephemeral creds) Supply:
-  -e IA_ACCESS_KEY=XXXX -e IA_SECRET_KEY=YYYY
-  The entrypoint writes /home/app/.config/ia/ia.ini at runtime.
+3. Fallback (UI/env keys):
+  - Supply `IA_ACCESS_KEY` + `IA_SECRET_KEY` via env vars or the Web UI Global Settings modal.
+  - The entrypoint writes `/home/app/.config/ia/ia.ini` at runtime.
 
-4. (Docker secrets) Store ia.ini contents (or just key/secret lines) in a secret, mount it (e.g. /run/secrets/ia.ini), then copy or cat it to /home/app/.config/ia/ia.ini via a small wrapper script or custom entrypoint.
+4. Docker secrets (production):
+  - Store `ia.ini` contents in a secret, mount it (for example `/run/secrets/ia.ini`), then copy it to `/home/app/.config/ia/ia.ini` at startup.
 
 5. Verify inside a running container (optional):
-  docker exec -it <container> ia whoami
+  - `docker exec -it <container> ia whoami`
 
 No credentials needed for public-item dry runs (use --dry-run).  
 
@@ -60,6 +63,25 @@ A `docker-compose.yml` is provided for easy local testing with sane defaults. It
 3. Run: `docker-compose up`
 4. Open the Web UI at http://localhost:17865 to queue items and watch status.
 5. This will perform a dry-run download, showing estimates and what files would be fetched.
+
+### Seamless auth with Docker Compose (recommended)
+
+If you already ran `ia configure` on your host, mount that config into the container so credentials are automatically available:
+
+```yaml
+services:
+  ia-mirror:
+    volumes:
+      - ~/.config/ia:/home/app/.config/ia:ro
+```
+
+Then start normally:
+
+```bash
+docker compose up -d
+```
+
+This is the preferred path for local development because you configure credentials once and reuse them everywhere.
 
 To switch to a real download:
 - Edit `docker-compose.yml` or your `.env` file and change `IA_DRY_RUN=1` to `IA_DRY_RUN=0`.

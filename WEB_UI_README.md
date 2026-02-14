@@ -20,20 +20,22 @@ The Web UI is a Flask-based web interface for managing Internet Archive download
 ```bash
 docker run -d \
   -v /local/mirror:/downloads \
+  -v /local/state:/data \
   -p 17865:17865 \
-  ia-mirror:latest
+  themorgantown/ia-mirror:latest
 ```
 
 Access at: `http://localhost:17865`
 
-### With CLI Fallback Disabled
+### Web UI Enabled Explicitly
 
 ```bash
 docker run -d \
   -v /local/mirror:/downloads \
+  -v /local/state:/data \
   -p 17865:17865 \
   -e WEB_ENABLED=true \
-  ia-mirror:latest
+  themorgantown/ia-mirror:latest
 ```
 
 ### CLI Mode (Web UI Disabled)
@@ -41,8 +43,9 @@ docker run -d \
 ```bash
 docker run --rm \
   -v /local/mirror:/downloads \
+  -v /local/state:/data \
   -e WEB_ENABLED=false \
-  ia-mirror:latest \
+  themorgantown/ia-mirror:latest \
   --identifier jillem-archive
 ```
 
@@ -53,7 +56,7 @@ docker run --rm \
 | `WEB_ENABLED` | `true` | Enable web UI (if false, runs CLI fetcher) |
 | `WEB_HOST` | `0.0.0.0` | Bind address |
 | `WEB_PORT` | `17865` | Web UI port |
-| `WEB_DB_PATH` | `/downloads/.ia-mirror/ui.db` | SQLite database path |
+| `WEB_DB_PATH` | `/data/ui.db` | SQLite database path |
 | `WEB_RUNNER` | `real` | `real` (run fetcher) or `mock` (test mode) |
 | `IA_ACCESS_KEY` | - | Internet Archive access key (optional) |
 | `IA_SECRET_KEY` | - | Internet Archive secret key (optional) |
@@ -115,7 +118,7 @@ In the "Paste IA URLs or Identifiers" textarea, enter one identifier per line. Y
 
 - `GET /api/config` - Get current configuration defaults
 - `POST /api/config` - Save UI configuration
-- `GET /api/destinations` - List available subdirectories under `/data`
+- `GET /api/destinations` - List available subdirectories under `/downloads`
 - `POST /api/destinations/validate` - Validate a destination path
 
 ### Status & History
@@ -155,7 +158,7 @@ Connect to `/` namespace:
 ## Data Persistence
 
 ### Database
-- Location: `/downloads/.ia-mirror/ui.db` (SQLite)
+- Location: `/data/ui.db` (SQLite by default)
 - Contains: Job history, queue state, UI config
 - Survives container restarts
 
@@ -169,11 +172,11 @@ Per-item outputs remain in existing locations:
 
 ## Testing
 
-### Run Unit Tests
+### Run Unit Tests (Local Python)
 
 ```bash
 cd /Users/daniel/Documents/GitHub/ia-mirror
-pytest tests/ui/test_backend.py -v
+pytest tests/test_ui.py -v
 ```
 
 Tests cover:
@@ -186,7 +189,7 @@ Tests cover:
 ### Run Docker Integration Tests
 
 ```bash
-bash tests/test_ui_docker.sh
+./tests/run_tests.sh
 ```
 
 Tests cover:
@@ -201,18 +204,18 @@ Tests cover:
 
 ### Backend (Python)
 
-- **web/app.py** - Flask application setup
-- **web/routes.py** - API endpoints
-- **web/queue.py** - Queue worker loop
-- **web/jobs.py** - Job execution (real + mock runners)
-- **web/storage.py** - SQLite persistence
-- **web/parsing.py** - URL/identifier normalization
+- **docker/web/app.py** - Flask application setup
+- **docker/web/routes.py** - API endpoints
+- **docker/web/queue.py** - Queue worker loop
+- **docker/web/jobs.py** - Job execution (real + mock runners)
+- **docker/web/storage.py** - SQLite persistence
+- **docker/web/parsing.py** - URL/identifier normalization
 
 ### Frontend (Vanilla JS)
 
-- **templates/index.html** - HTML structure
-- **static/js/app.js** - SocketIO client + UI logic
-- **static/css/styles.css** - Responsive styling (Bootstrap 5 + custom)
+- **docker/templates/index.html** - HTML structure
+- **docker/static/js/app.js** - SocketIO client + UI logic
+- **docker/static/css/styles.css** - Responsive styling (Bootstrap 5 + custom)
 
 ### Data Model
 

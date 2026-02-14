@@ -18,6 +18,7 @@ json
 ia_download.log
 test_sync/*
 tests/test_output/
+tests/test_run.log
 run.log
 # python cache
 __pycache__/

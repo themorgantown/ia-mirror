@@ -29,6 +29,16 @@ def create_app(config=None):
     # Initialize storage
     storage = JobStorage(db_path)
     
+    # Reset stuck jobs from previous run
+    storage.reset_stuck_jobs()
+    
+    # Load stored credentials into environment if they exist
+    stored_config = storage.get_all_config()
+    if stored_config.get('ia_access_key'):
+        os.environ['IA_ACCESS_KEY'] = stored_config['ia_access_key']
+    if stored_config.get('ia_secret_key'):
+        os.environ['IA_SECRET_KEY'] = stored_config['ia_secret_key']
+    
     # Initialize queue worker
     worker = QueueWorker(storage, runner_type=runner_type)
     
