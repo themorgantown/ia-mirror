@@ -57,6 +57,17 @@ class JobRunner:
 
 class RealJobRunner(JobRunner):
     """Real job runner that executes fetcher.py."""
+
+    def _resolve_job_workdir(self) -> str:
+        """Resolve a writable working directory aligned with fetcher dest logic."""
+        base_dest = self.destdir or '/downloads'
+        normalized = os.path.normpath(base_dest)
+
+        # Keep behavior aligned with fetcher.py destination resolution:
+        # if --destdir is /downloads, fetcher nests under /downloads/<identifier>
+        if normalized == '/downloads':
+            return os.path.join(normalized, self.identifier)
+        return normalized
     
     def run(self, on_log: Callable, on_progress: Callable) -> int:
         """Run fetcher.py with the configuration."""
@@ -100,14 +111,62 @@ class RealJobRunner(JobRunner):
         if self.config.get('max_mbps'):
             cmd.extend(['--max-mbps', str(self.config['max_mbps'])])
             
+        # Tier 1: Extended options
+        if self.config.get('sync_mode'):
+            cmd.append('--sync')
+            
+        if self.config.get('ignore_existing'):
+            cmd.append('--ignore-existing')
+            
+        verify_mode = self.config.get('verify_mode', 'size')
+        if verify_mode and verify_mode != 'size':
+            cmd.extend(['--verify-mode', verify_mode])
+            
+        if self.config.get('file_formats'):
+            cmd.extend(['--format', self.config['file_formats']])
+            
+        if self.config.get('exclude_pattern'):
+            cmd.extend(['--exclude', self.config['exclude_pattern']])
+            
+        retries = self.config.get('retries')
+        if retries and retries != 5:
+            cmd.extend(['--retries', str(retries)])
+            
+        # Tier 2: Expert options
+        if self.config.get('source'):
+            cmd.extend(['--source', self.config['source']])
+            
+        if self.config.get('assumed_mbps'):
+            cmd.extend(['--assumed-mbps', str(self.config['assumed_mbps'])])
+            
+        cost_per_gb = self.config.get('cost_per_gb')
+        if cost_per_gb and cost_per_gb > 0:
+            cmd.extend(['--cost-per-gb', str(cost_per_gb)])
+            
+        if self.config.get('no_directories'):
+            cmd.append('--no-directories')
+            
+        if self.config.get('resumefolders'):
+            cmd.append('--resumefolders')
+            
+        if self.config.get('no_lock'):
+            cmd.append('--no-lock')
+            
+        if self.config.get('no_backoff'):
+            cmd.append('--no-backoff')
+            
         # Hardcoded/Passthrough safe defaults if not explicit
         # We don't map every single possible fetcher arg from config yet, 
         # only the ones the UI exposes or that commonly matter.
         
         try:
+            workdir = self._resolve_job_workdir()
+            os.makedirs(workdir, exist_ok=True)
+
             self.process = subprocess.Popen(
                 cmd,
                 env=env,
+                cwd=workdir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,

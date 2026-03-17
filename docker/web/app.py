@@ -22,7 +22,11 @@ def create_app(config=None):
     if config is None:
         config = {}
     
-    app.config['SECRET_KEY'] = config.get('SECRET_KEY', os.getenv('WEB_SECRET_KEY', 'dev-secret-key'))
+    secret_key = config.get('SECRET_KEY', os.getenv('WEB_SECRET_KEY', 'dev-secret-key'))
+    if secret_key == 'dev-secret-key':
+        import sys
+        print("WARNING: Using default secret key. Set WEB_SECRET_KEY environment variable for production.", file=sys.stderr)
+    app.config['SECRET_KEY'] = secret_key
     db_path = config.get('DB_PATH', os.getenv('WEB_DB_PATH', '/downloads/.ia-mirror/ui.db'))
     runner_type = config.get('RUNNER_TYPE', os.getenv('WEB_RUNNER', 'real'))
     

@@ -1,5 +1,4 @@
 /* ia-mirror Modern UI Styles */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 /* Base Reset & Typography */
 :root {
@@ -26,7 +25,7 @@
 }
 
 body {
-  font-family: 'Inter', sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF UI Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background-color: var(--color-bg);
   background-image: 
     radial-gradient(at 0% 0%, rgba(79, 70, 229, 0.15) 0px, transparent 50%),
@@ -35,17 +34,19 @@ body {
   color: var(--color-text-main);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
 }
 
 h1, h2, h3, h4, h5, h6, .font-heading {
-  font-family: 'Outfit', sans-serif;
+  font-family: "Courier New", Courier, monospace;
+  font-weight: 700;
   color: var(--color-text-main);
   letter-spacing: -0.015em;
 }
 
 .font-monospace {
-  font-family: 'JetBrains Mono', monospace !important;
+  font-family: "SF Mono", Monaco, "Courier New", monospace;
 }
 
 .text-xs { font-size: 0.75rem; }
@@ -346,7 +347,7 @@ h1, h2, h3, h4, h5, h6, .font-heading {
 }
 
 .console-destination {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "SF Mono", Monaco, "Courier New", monospace;
     font-size: 0.82rem;
     background: rgba(15, 23, 42, 0.55);
     border: 1px solid var(--color-border);
@@ -366,7 +367,7 @@ h1, h2, h3, h4, h5, h6, .font-heading {
 
 .ascii-console-text {
     margin: 0;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "SF Mono", Monaco, "Courier New", monospace;
     font-size: 0.75rem;
     line-height: 1.45;
     color: #cbd5e1;
@@ -393,7 +394,7 @@ h1, h2, h3, h4, h5, h6, .font-heading {
 }
 
 .recent-download-path {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "SF Mono", Monaco, "Courier New", monospace;
     font-size: 0.72rem;
     color: #cbd5e1;
     word-break: break-all;

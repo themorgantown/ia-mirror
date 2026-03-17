@@ -6,10 +6,9 @@ class IAMirrorUI {
         this.socket = io();
         this.currentJob = null;
         this.isRunning = false;
-        this.speedSamples = [];
-        this.bytesSamples = [];
         this.totalBytesDownloaded = 0;
         this.currentJobId = null;
+        this.queueLength = 0;
         this.defaultDestination = '/downloads';
         this.liveProgress = {
             status: 'idle',
@@ -18,6 +17,7 @@ class IAMirrorUI {
             downloadedBytesCompleted: 0,
             currentFileBytesDone: 0,
             currentFileBytesTotal: 0,
+            currentFile: '',
             totalKnownBytes: null,
             remainingBytesEstimate: null,
             etaSeconds: null,
@@ -29,12 +29,15 @@ class IAMirrorUI {
         this.setupSocketListeners();
         this.setupLogViewer();
         this.requestNotificationPermission();
-        this.loadDestinationHint();
-        this.loadRecentDownloads();
-        this.loadStatus();
-        this.updateDestinationPath();
-        this.updateAsciiConsole();
-        // Load watcher data if tab is active (or just pre-load)
+        
+        // Defer non-critical initial data loads to after first paint
+        requestAnimationFrame(() => {
+            this.loadDestinationHint();
+            this.loadRecentDownloads();
+            this.loadStatus();
+            this.updateDestinationPath();
+            this.updateAsciiConsole(this.queueLength);
+        });
     }
     
     async requestNotificationPermission() {
@@ -82,8 +85,14 @@ class IAMirrorUI {
             this.socket.emit('request_status');
         });
 
+        this.socket.on('disconnect', (reason) => {
+            console.log('Disconnected from server:', reason);
+            // Optional: show user notification
+        });
+
         this.socket.on('status_update', (data) => {
             console.log('Status update:', data);
+            this.queueLength = data.queue_length || 0;
             this.updateUI(data);
         });
 
@@ -225,6 +234,15 @@ class IAMirrorUI {
                 document.getElementById('settings-access-key').value = config.ia_access_key || '';
                 document.getElementById('settings-secret-key').value = config.ia_secret_key || '';
                 document.getElementById('settings-concurrency').value = config.concurrency || 4;
+                document.getElementById('settings-verify-mode').value = config.verify_mode || 'size';
+                document.getElementById('settings-retries').value = config.retries || 5;
+                document.getElementById('settings-source').value = config.source || '';
+                document.getElementById('settings-assumed-mbps').value = config.assumed_mbps || 100;
+                document.getElementById('settings-cost-per-gb').value = config.cost_per_gb || 0;
+                document.getElementById('settings-no-directories').checked = config.no_directories || false;
+                document.getElementById('settings-resumefolders').checked = config.resumefolders || false;
+                document.getElementById('settings-no-lock').checked = config.no_lock || false;
+                document.getElementById('settings-no-backoff').checked = config.no_backoff || false;
             }
         } catch (e) {
             console.error('Failed to load config:', e);
@@ -237,7 +255,16 @@ class IAMirrorUI {
         const config = {
             ia_access_key: document.getElementById('settings-access-key').value,
             ia_secret_key: document.getElementById('settings-secret-key').value,
-            concurrency: parseInt(document.getElementById('settings-concurrency').value)
+            concurrency: parseInt(document.getElementById('settings-concurrency').value),
+            verify_mode: document.getElementById('settings-verify-mode').value,
+            retries: parseInt(document.getElementById('settings-retries').value),
+            source: document.getElementById('settings-source').value || null,
+            assumed_mbps: parseInt(document.getElementById('settings-assumed-mbps').value),
+            cost_per_gb: parseFloat(document.getElementById('settings-cost-per-gb').value),
+            no_directories: document.getElementById('settings-no-directories').checked,
+            resumefolders: document.getElementById('settings-resumefolders').checked,
+            no_lock: document.getElementById('settings-no-lock').checked,
+            no_backoff: document.getElementById('settings-no-backoff').checked
         };
 
         try {
@@ -290,7 +317,13 @@ class IAMirrorUI {
             max_mbps: document.getElementById('max-mbps')?.value || null,
             glob_pattern: document.getElementById('glob-pattern')?.value || '*',
             verify_only: document.getElementById('verify-only')?.checked,
-            collection_mode: document.getElementById('collection-mode')?.checked
+            collection_mode: document.getElementById('collection-mode')?.checked,
+            sync_mode: document.getElementById('sync-mode')?.checked,
+            ignore_existing: document.getElementById('ignore-existing')?.checked,
+            verify_mode: document.getElementById('verify-mode')?.value || 'size',
+            file_formats: document.getElementById('file-formats')?.value || null,
+            exclude_pattern: document.getElementById('exclude-pattern')?.value || null,
+            retries: parseInt(document.getElementById('retries')?.value) || 5
         };
     }
 
@@ -422,24 +455,11 @@ class IAMirrorUI {
             this.currentJob = data.active_job;
             this.isRunning = true;
             this.liveProgress.status = 'running';
-            this.showSection('status-section');
-            this.updateJobUI(data.active_job);
-        } else if (data.is_processing && (data.queue_length || 0) > 0) {
-            this.currentJob = null;
-            this.isRunning = true;
-            this.liveProgress.status = 'queued';
-            this.showSection('status-section');
-            const titleEl = document.getElementById('active-job-id');
-            if (titleEl) titleEl.textContent = `Queued jobs: ${data.queue_length}`;
-            const badge = document.getElementById('job-status-badge');
-            if (badge) {
-                badge.textContent = 'QUEUED';
-                badge.className = 'badge badge-pill bg-secondary';
-            }
+            // Update job info in ASCII console
+            this.liveProgress.currentFile = data.active_job.identifier || 'starting';
         } else {
             this.currentJob = null;
             this.isRunning = false;
-            this.hideSection('status-section');
             if (this.liveProgress.status !== 'completed') {
                 this.liveProgress.status = 'idle';
                 this.liveProgress.currentFileBytesDone = 0;
@@ -448,7 +468,7 @@ class IAMirrorUI {
         }
 
         this.updateDestinationPath(data.active_job || null);
-        this.updateAsciiConsole();
+        this.updateAsciiConsole(data.queue_length || 0);
         this.updateUIState();
     }
 
@@ -491,12 +511,10 @@ class IAMirrorUI {
         if (data.status === 'running') {
             this.currentJob = data;
             this.isRunning = true;
-            this.showSection('status-section');
             this.liveProgress.status = 'running';
             this.updateDestinationPath(this.currentJob);
         } else if (data.status === 'completed' || data.status === 'failed') {
             this.isRunning = false;
-            // Show completion notification
             const statusMsg = data.status === 'completed' ? 'Download completed!' : 'Download failed.';
             const statusType = data.status === 'completed' ? 'success' : 'danger';
             this.setActionStatus(statusMsg, statusType);
@@ -505,50 +523,20 @@ class IAMirrorUI {
                 this.liveProgress.remainingBytesEstimate = 0;
                 this.liveProgress.etaSeconds = 0;
             }
-            this.updateAsciiConsole();
+            this.updateAsciiConsole(this.queueLength);
             this.loadRecentDownloads();
 
-            // Send browser notification
             this.sendNotification('Job Update', {
                 body: `The download has ${data.status}.`
             });
 
-            // Keep status visible for a moment, then hide
             setTimeout(() => {
-                this.hideSection('status-section');
                 this.currentJob = null;
-                this.loadStatus(); // Refresh full status
+                this.loadStatus();
             }, 3000);
         }
 
         this.updateUIState();
-    }
-
-    updateJobUI(job) {
-        const status = job.status || 'idle';
-        const badge = document.getElementById('job-status-badge');
-        const spinner = document.getElementById('job-spinner');
-
-        // Update Title
-        const titleEl = document.getElementById('active-job-id');
-        if (titleEl) titleEl.textContent = job.title || job.identifier || 'Processing...';
-
-        if (badge) {
-            badge.textContent = status.toUpperCase();
-            let statusClass = 'bg-secondary';
-            if (status === 'running') statusClass = 'bg-primary';
-            if (status === 'completed') statusClass = 'bg-success';
-            if (status === 'failed') statusClass = 'bg-danger';
-            badge.className = `badge badge-pill ${statusClass}`;
-        }
-
-        if (spinner) {
-            spinner.style.display = status === 'running' ? 'block' : 'none';
-        }
-
-        if (job.progress) {
-            this.updateProgress(job.progress);
-        }
     }
 
     updateProgress(progress) {
@@ -567,11 +555,13 @@ class IAMirrorUI {
             this.liveProgress.downloadedBytesCompleted += fileBytes;
             this.liveProgress.currentFileBytesDone = 0;
             this.liveProgress.currentFileBytesTotal = 0;
+            this.liveProgress.currentFile = '';
         }
 
         if (eventType === 'file_start') {
             this.liveProgress.currentFileBytesDone = 0;
             this.liveProgress.currentFileBytesTotal = Number(progress.bytes_total || 0) || 0;
+            this.liveProgress.currentFile = progress.filename || '';
         }
 
         if (eventType === 'progress' || eventType === 'file_start' || eventType === 'file_end') {
@@ -637,7 +627,7 @@ class IAMirrorUI {
         if (speed) speed.textContent = this.liveProgress.speedText || '0 MB/s';
 
         this.liveProgress.status = this.isRunning ? 'running' : (this.liveProgress.status || 'idle');
-        this.updateAsciiConsole();
+        this.updateAsciiConsole(this.queueLength);
     }
 
     resetLiveProgress(status = 'idle') {
@@ -648,13 +638,14 @@ class IAMirrorUI {
             downloadedBytesCompleted: 0,
             currentFileBytesDone: 0,
             currentFileBytesTotal: 0,
+            currentFile: '',
             totalKnownBytes: null,
             remainingBytesEstimate: null,
             etaSeconds: null,
             speedMBps: 0,
             speedText: '0 MB/s'
         };
-        this.updateAsciiConsole();
+        this.updateAsciiConsole(this.queueLength);
     }
 
     estimatedBytesDone() {
@@ -702,7 +693,7 @@ class IAMirrorUI {
         destinationEl.textContent = resolved;
     }
 
-    updateAsciiConsole() {
+    updateAsciiConsole(queueLength = 0) {
         const textEl = document.getElementById('ascii-progress-text');
         const percentEl = document.getElementById('ascii-progress-percent');
         if (!textEl || !percentEl) return;
@@ -710,6 +701,15 @@ class IAMirrorUI {
         const status = this.isRunning
             ? (this.liveProgress.status === 'idle' ? 'running' : this.liveProgress.status)
             : (this.liveProgress.status || 'idle');
+        
+        let displayStatus = status;
+        let queueInfo = '';
+        
+        if (!this.isRunning && queueLength > 0) {
+            displayStatus = 'queued';
+            queueInfo = `${queueLength} job${queueLength > 1 ? 's' : ''} waiting`;
+        }
+        
         const doneBytes = this.estimatedBytesDone();
         const remainingBytes = this.estimatedRemainingBytes();
         const totalBytes = this.estimatedTotalBytes();
@@ -730,19 +730,25 @@ class IAMirrorUI {
         const etaText = this.liveProgress.etaSeconds ? this.formatEta(this.liveProgress.etaSeconds) : '--:--';
         const remainText = remainingBytes > 0 ? this.formatBytes(remainingBytes) : '--';
         const speedText = this.liveProgress.speedText || '0 MB/s';
+        
+        const currentFile = this.liveProgress.currentFile || '--';
 
-        textEl.textContent = [
+        const lines = [
             '+------------------------------------------+',
             ' IA-MIRROR PROGRESS',
             '+------------------------------------------+',
-            ` STATUS         : ${status}`,
+            ` STATUS         : ${displayStatus}`,
+            queueInfo ? ` QUEUE         : ${queueInfo}` : null,
+            this.isRunning ? ` CURRENT FILE  : ${currentFile.substring(0, 40)}` : null,
             ` FILES REMAIN   : ${filesRemaining}`,
             ` TIME REMAIN    : ${etaText}`,
             ` DATA REMAIN    : ${remainText}`,
             ` SPEED          : ${speedText}`,
             ` PROGRESS       : [${bar}] ${percent}%`,
             '+------------------------------------------+'
-        ].join('\n');
+        ].filter(line => line !== null);
+
+        textEl.textContent = lines.join('\n');
 
         percentEl.textContent = `${percent}%`;
     }
@@ -866,10 +872,6 @@ class IAMirrorUI {
         return value * factor / (1024 * 1024); // MB/s
     }
 
-    trimSamples(maxPoints = 60) {
-        if (this.speedSamples.length > maxPoints) this.speedSamples = this.speedSamples.slice(-maxPoints);
-        if (this.bytesSamples.length > maxPoints) this.bytesSamples = this.bytesSamples.slice(-maxPoints);
-    }
 
     formatBytes(bytes, decimals = 2) {
         if (bytes === 0) return '0 B';

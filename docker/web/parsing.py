@@ -65,32 +65,59 @@ def parse_batch_input(text: str) -> Tuple[List[str], List[str]]:
     return valid, invalid
 
 
+def safe_join(base: str, subpath: str) -> str:
+    """
+    Safely join base directory with subpath, ensuring the result stays within base.
+
+    Args:
+        base: Absolute base directory path.
+        subpath: Subpath relative to base.
+
+    Returns:
+        Joined absolute path if safe, otherwise raises ValueError.
+    """
+    import os
+    # Normalize base
+    base = os.path.normpath(base)
+    # Join and normalize
+    full = os.path.normpath(os.path.join(base, subpath))
+    # Ensure result starts with base
+    if not full.startswith(base):
+        raise ValueError(f"Path traversal attempt: {subpath} escapes {base}")
+    return full
+
+
 def validate_destination(path: str) -> bool:
     """
     Validate a destination path.
-    
+
     Rules:
-    - Must be within /data
+    - Must be within /data or /downloads (allowed base directories)
     - Cannot contain .. or other escapes
     - Must not start with /etc, /root, etc.
-    
+
     Args:
         path: Path to validate
-        
+
     Returns:
         True if valid, False otherwise
     """
     import os
-    
-    # Must start with /data
-    if not path.startswith('/data'):
+
+    # Must start with allowed base directory
+    allowed_bases = ['/data', '/downloads']
+    if not any(path.startswith(base) for base in allowed_bases):
         return False
-    
+
     # Normalize and check for escape attempts
     normalized = os.path.normpath(path)
-    if '..' in normalized or not normalized.startswith('/data'):
+    # Check for parent directory traversal
+    if '..' in normalized:
         return False
-    
+    # Ensure normalized path still starts with an allowed base
+    if not any(normalized.startswith(base) for base in allowed_bases):
+        return False
+
     # Additional safety: no absolute symlink escapes
     # (More thorough checks can be done at runtime)
     return True

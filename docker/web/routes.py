@@ -4,7 +4,7 @@ import os
 import json
 from flask import request, jsonify, send_file, render_template, abort
 from flask_socketio import emit
-from .parsing import parse_batch_input, validate_destination
+from .parsing import parse_batch_input, validate_destination, safe_join
 from .metadata import fetch_metadata
 import shutil
 import mimetypes
@@ -88,6 +88,19 @@ def register_routes(app, storage, worker, socketio, watcher=None):
             'verify_only': os.getenv('IA_VERIFY_ONLY') == '1' or os.getenv('IA_VERIFY_ONLY', '').lower() == 'true',
             'collection_mode': os.getenv('IA_COLLECTION') == '1' or os.getenv('IA_COLLECTION', '').lower() == 'true',
             'log_level': os.getenv('IA_LOG_LEVEL', 'INFO'),
+            'sync_mode': False,
+            'ignore_existing': False,
+            'verify_mode': 'size',
+            'file_formats': None,
+            'exclude_pattern': None,
+            'retries': 5,
+            'source': None,
+            'assumed_mbps': 100,
+            'cost_per_gb': 0,
+            'no_directories': False,
+            'resumefolders': False,
+            'no_lock': False,
+            'no_backoff': False,
         }
         defaults.update(config)
         return jsonify(defaults)
@@ -164,12 +177,11 @@ def register_routes(app, storage, worker, socketio, watcher=None):
         if not path or path == '/':
              req_path = base_dir
         else:
-            # Prevent directory traversal
-            # Join base_dir with provided path (stripping leading slash to treat as relative)
-            safe_path = os.path.normpath(os.path.join(base_dir, path.lstrip('/')))
-            if not safe_path.startswith(base_dir):
+            # Prevent directory traversal using safe_join
+            try:
+                req_path = safe_join(base_dir, path.lstrip('/'))
+            except ValueError:
                 return jsonify({'error': 'Access denied'}), 403
-            req_path = safe_path
 
         if not os.path.exists(req_path):
              return jsonify({'error': 'Path not found'}), 404
@@ -208,14 +220,14 @@ def register_routes(app, storage, worker, socketio, watcher=None):
         """Download a file."""
         path = request.args.get('path', '')
         base_dir = os.path.abspath('/downloads')
-        safe_path = os.path.normpath(os.path.join(base_dir, path.lstrip('/')))
-        
-        if not safe_path.startswith(base_dir):
+        try:
+            safe_path = safe_join(base_dir, path.lstrip('/'))
+        except ValueError:
             return jsonify({'error': 'Access denied'}), 403
-            
+
         if not os.path.isfile(safe_path):
              return jsonify({'error': 'File not found'}), 404
-             
+
         return send_file(safe_path, as_attachment=True)
 
     @app.route('/api/files/delete', methods=['POST'])
@@ -225,16 +237,16 @@ def register_routes(app, storage, worker, socketio, watcher=None):
         path = data.get('path')
         if not path:
              return jsonify({'error': 'Path required'}), 400
-             
+
         base_dir = os.path.abspath('/downloads')
-        safe_path = os.path.normpath(os.path.join(base_dir, path.lstrip('/')))
-        
-        if not safe_path.startswith(base_dir):
+        try:
+            safe_path = safe_join(base_dir, path.lstrip('/'))
+        except ValueError:
             return jsonify({'error': 'Access denied'}), 403
-            
+
         if not os.path.exists(safe_path):
              return jsonify({'error': 'Item not found'}), 404
-             
+
         # Root protection (should be covered by startswith check, but safe_path could be exactly base_dir)
         if safe_path == base_dir:
              return jsonify({'error': 'Cannot delete root downloads directory'}), 403
@@ -246,7 +258,7 @@ def register_routes(app, storage, worker, socketio, watcher=None):
                 shutil.rmtree(safe_path)
         except Exception as e:
              return jsonify({'error': str(e)}), 500
-             
+
         return jsonify({'status': 'ok'})
         
     @app.route('/api/files/content', methods=['GET'])
@@ -254,18 +266,18 @@ def register_routes(app, storage, worker, socketio, watcher=None):
         """Get file content for preview (text)."""
         path = request.args.get('path', '')
         base_dir = os.path.abspath('/downloads')
-        safe_path = os.path.normpath(os.path.join(base_dir, path.lstrip('/')))
-        
-        if not safe_path.startswith(base_dir):
+        try:
+            safe_path = safe_join(base_dir, path.lstrip('/'))
+        except ValueError:
             return jsonify({'error': 'Access denied'}), 403
-            
+
         if not os.path.isfile(safe_path):
              return jsonify({'error': 'File not found'}), 404
-             
+
         # Check size limit (e.g. 1MB)
         if os.path.getsize(safe_path) > 1024 * 1024:
              return jsonify({'error': 'File too large to preview'}), 400
-             
+
         try:
              with open(safe_path, 'r', encoding='utf-8', errors='replace') as f:
                  content = f.read()

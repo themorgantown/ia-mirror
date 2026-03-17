@@ -373,6 +373,147 @@ def test_queue_add_with_metadata(client, storage):
         job_api = data['jobs'][0]
         assert job_api['title'] == 'Test Title'
 
+def test_get_config(client):
+    """Test GET /api/config endpoint."""
+    response = client.get('/api/config')
+    assert response.status_code == 200
+    data = response.json
+    assert 'destination' in data
+    assert 'operation' in data
+
+def test_post_config(client, storage):
+    """Test POST /api/config endpoint."""
+    config_data = {'theme': 'dark', 'concurrency': 8}
+    response = client.post('/api/config', json=config_data)
+    assert response.status_code == 200
+    assert storage.get_config('theme') == 'dark'
+    assert storage.get_config('concurrency') == '8'
+
+def test_get_status(client):
+    """Test GET /api/status endpoint."""
+    response = client.get('/api/status')
+    assert response.status_code == 200
+    data = response.json
+    assert 'queue_length' in data
+    assert 'system' in data
+    assert 'has_credentials' in data['system']
+
+def test_get_jobs(client, storage):
+    """Test GET /api/jobs endpoint."""
+    # Add a job first
+    storage.add_job('test-item', 'test-item', 'download', {})
+    response = client.get('/api/jobs')
+    assert response.status_code == 200
+    data = response.json
+    assert 'jobs' in data
+    assert len(data['jobs']) >= 1
+
+def test_get_job_by_id(client, storage):
+    """Test GET /api/jobs/<id> endpoint."""
+    job_id = storage.add_job('test-item', 'test-item', 'download', {})
+    response = client.get(f'/api/jobs/{job_id}')
+    assert response.status_code == 200
+    data = response.json
+    assert data['identifier'] == 'test-item'
+
+def test_get_job_log(client, storage):
+    """Test GET /api/jobs/<id>/log endpoint."""
+    job_id = storage.add_job('test-item', 'test-item', 'download', {})
+    response = client.get(f'/api/jobs/{job_id}/log')
+    # Should return 200 if log exists, 404 if not
+    assert response.status_code in (200, 404)
+
+def test_queue_add_invalid(client):
+    """Test POST /api/queue/add with invalid input."""
+    response = client.post('/api/queue/add', json={'text': ''})
+    # Empty text may return 200 with valid_count=0 or 400 error
+    assert response.status_code in (200, 400)
+    data = response.json
+    if response.status_code == 400:
+        assert 'error' in data
+    else:
+        assert 'valid_count' in data
+        assert data['valid_count'] == 0
+
+def test_queue_delete_nonexistent(client):
+    """Test DELETE /api/queue/<id> with non-existent job."""
+    response = client.delete('/api/queue/99999')
+    # Delete may be idempotent (return 200) or return 404
+    assert response.status_code in (200, 404)
+
+@pytest.mark.skip(reason="requires mock of storage and destination")
+def test_file_list_valid(client, tmp_path):
+    """Test GET /api/files/list with valid path."""
+    # Create a temporary directory and file
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+    (test_dir / "file.txt").write_text("content")
+
+    # Need to mock storage or use a real destination
+    # For now, skip as it requires more setup
+    pass
+
+def test_file_list_path_traversal(client):
+    """Test GET /api/files/list with path traversal attempt."""
+    response = client.get('/api/files/list?path=/downloads/../../etc')
+    assert response.status_code == 403
+    data = response.json
+    assert 'error' in data
+
+def test_file_download_path_traversal(client):
+    """Test GET /api/files/download with path traversal attempt."""
+    response = client.get('/api/files/download?path=/downloads/../../etc/passwd')
+    assert response.status_code == 403
+
+def test_file_delete_path_traversal(client):
+    """Test POST /api/files/delete with path traversal attempt."""
+    response = client.post('/api/files/delete', json={'path': '/downloads/../../etc/passwd'})
+    assert response.status_code == 403
+
+def test_file_content_path_traversal(client):
+    """Test GET /api/files/content with path traversal attempt."""
+    response = client.get('/api/files/content?path=/downloads/../../etc/passwd')
+    assert response.status_code == 403
+
+def test_destinations_validate_valid(client):
+    """Test POST /api/destinations/validate with valid path."""
+    response = client.post('/api/destinations/validate', json={'path': '/downloads'})
+    assert response.status_code == 200
+    data = response.json
+    assert data['valid'] == True
+
+def test_destinations_validate_invalid(client):
+    """Test POST /api/destinations/validate with invalid path."""
+    response = client.post('/api/destinations/validate', json={'path': '/etc'})
+    # May return 400 error or 200 with valid=False
+    if response.status_code == 200:
+        data = response.json
+        assert data['valid'] == False
+    else:
+        assert response.status_code == 400
+
+@pytest.mark.skip(reason="watcher table not created in test")
+def test_watcher_collections_get(client):
+    """Test GET /api/watcher/collections."""
+    response = client.get('/api/watcher/collections')
+    assert response.status_code == 200
+    data = response.json
+    assert 'collections' in data
+
+@pytest.mark.skip(reason="watcher table not created in test")
+def test_watcher_collections_post(client):
+    """Test POST /api/watcher/collections."""
+    response = client.post('/api/watcher/collections', json={'identifier': 'test-collection'})
+    # May return 200 or 400 depending on implementation
+    assert response.status_code in [200, 400]
+
+@pytest.mark.skip(reason="watcher table not created in test")
+def test_watcher_collections_delete(client):
+    """Test DELETE /api/watcher/collections/<identifier>."""
+    response = client.delete('/api/watcher/collections/test-collection')
+    # May return 200 or 404
+    assert response.status_code in [200, 404]
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
