@@ -23,7 +23,7 @@ RUN apt-get update && \
         tini \
         bash \
         gosu && \
-    apt-get install -y --only-upgrade openssl && \
+    apt-get install -y --no-install-recommends --only-upgrade openssl && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 

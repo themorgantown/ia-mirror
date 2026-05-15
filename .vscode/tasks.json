@@ -298,6 +298,43 @@
 				"scripts/check_dependencies.py"
 			],
 			"isBackground": false
+		},
+		{
+			"label": "Validate hadolint Dockerfile",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"run",
+				"--rm",
+				"-i",
+				"hadolint/hadolint",
+				"hadolint",
+				"--ignore",
+				"DL3008",
+				"-"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "Validate fetcher syntax",
+			"type": "shell",
+			"command": "python3",
+			"args": [
+				"-m",
+				"py_compile",
+				"docker/fetcher.py"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "Validate hadolint Dockerfile piped",
+			"type": "shell",
+			"command": "sh",
+			"args": [
+				"-c",
+				"docker run --rm -i hadolint/hadolint hadolint --ignore DL3008 - < docker/Dockerfile"
+			],
+			"isBackground": false
 		}
 	]
 }

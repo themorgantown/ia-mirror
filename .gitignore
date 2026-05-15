@@ -37,3 +37,4 @@ CLAUDE.md
 .impeccable.md
 .gitignore
 *.log
+.DS_Store
