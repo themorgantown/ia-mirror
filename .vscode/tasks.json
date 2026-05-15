@@ -39,6 +39,265 @@
 				"kind": "build",
 				"isDefault": true
 			}
+		},
+		{
+			"label": "Syntax check ia-mirror Python",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"-m",
+				"py_compile",
+				"docker/fetcher.py",
+				"docker/web/app.py",
+				"docker/web/routes.py",
+				"docker/web/jobs.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Syntax check ia-mirror Python 3",
+			"type": "shell",
+			"command": "python3",
+			"args": [
+				"-m",
+				"py_compile",
+				"docker/fetcher.py",
+				"docker/web/app.py",
+				"docker/web/routes.py",
+				"docker/web/jobs.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run backend unit tests",
+			"type": "shell",
+			"command": "python3",
+			"args": [
+				"-m",
+				"pytest",
+				"tests/test_web_backend.py",
+				"tests/test_file_browser_api.py",
+				"tests/test_watcher_service.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run containerized backend tests",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"run",
+				"--rm",
+				"--entrypoint",
+				"python",
+				"-v",
+				"${workspaceFolder}/tests:/app/tests:ro",
+				"-w",
+				"/app",
+				"ia-mirror:local",
+				"-m",
+				"pytest",
+				"tests/test_web_backend.py",
+				"tests/test_file_browser_api.py",
+				"tests/test_watcher_service.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run pip audit in container",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"run",
+				"--rm",
+				"--entrypoint",
+				"sh",
+				"ia-mirror:local",
+				"-lc",
+				"python -m pip install --no-cache-dir pip-audit >/tmp/pip-audit-install.log && pip-audit -r /app/requirements.txt"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run containerized backend tests after schema fix",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"run",
+				"--rm",
+				"--entrypoint",
+				"python",
+				"-v",
+				"${workspaceFolder}/tests:/app/tests:ro",
+				"-w",
+				"/app",
+				"ia-mirror:local",
+				"-m",
+				"pytest",
+				"tests/test_web_backend.py",
+				"tests/test_file_browser_api.py",
+				"tests/test_watcher_service.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run containerized backend tests final",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"run",
+				"--rm",
+				"--entrypoint",
+				"python",
+				"-v",
+				"${workspaceFolder}/tests:/app/tests:ro",
+				"-w",
+				"/app",
+				"ia-mirror:local",
+				"-m",
+				"pytest",
+				"tests/test_web_backend.py",
+				"tests/test_file_browser_api.py",
+				"tests/test_watcher_service.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run full ia-mirror test suite",
+			"type": "shell",
+			"command": "./tests/runtests.sh",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run full ia-mirror test suite final",
+			"type": "shell",
+			"command": "./tests/runtests.sh",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run full ia-mirror test suite clean",
+			"type": "shell",
+			"command": "./tests/runtests.sh",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Run targeted pytest after batch dry-run fix",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"run",
+				"--rm",
+				"--entrypoint",
+				"",
+				"-v",
+				"/Users/daniel/Documents/GitHub/ia-mirror/tests:/app/tests",
+				"-w",
+				"/app",
+				"ia-mirror:local",
+				"pytest",
+				"/app/tests/test_fetcher.py",
+				"/app/tests/test_web_backend.py",
+				"/app/tests/test_watcher_service.py",
+				"/app/tests/test_file_browser_api.py"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "Run targeted pytest in container",
+			"type": "shell",
+			"command": "sh",
+			"args": [
+				"-c",
+				"docker run --rm --entrypoint '' -v '/Users/daniel/Documents/GitHub/ia-mirror/tests:/app/tests' -w /app ia-mirror:local pytest /app/tests/test_fetcher.py /app/tests/test_web_backend.py /app/tests/test_watcher_service.py /app/tests/test_file_browser_api.py"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "Run targeted pytest via shell entrypoint",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"run",
+				"--rm",
+				"--entrypoint",
+				"/bin/sh",
+				"-v",
+				"/Users/daniel/Documents/GitHub/ia-mirror/tests:/app/tests",
+				"-w",
+				"/app",
+				"ia-mirror:local",
+				"-lc",
+				"pytest /app/tests/test_fetcher.py /app/tests/test_web_backend.py /app/tests/test_watcher_service.py /app/tests/test_file_browser_api.py"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "Rerun targeted pytest via shell entrypoint",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"run",
+				"--rm",
+				"--entrypoint",
+				"/bin/sh",
+				"-v",
+				"/Users/daniel/Documents/GitHub/ia-mirror/tests:/app/tests",
+				"-w",
+				"/app",
+				"ia-mirror:local",
+				"-lc",
+				"pytest /app/tests/test_fetcher.py /app/tests/test_web_backend.py /app/tests/test_watcher_service.py /app/tests/test_file_browser_api.py"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "Run full integration suite after batch env fix",
+			"type": "shell",
+			"command": "./tests/runtests.sh",
+			"isBackground": false
+		},
+		{
+			"label": "Run full integration suite with result backfill",
+			"type": "shell",
+			"command": "./tests/runtests.sh",
+			"isBackground": false
+		},
+		{
+			"label": "Final full integration suite",
+			"type": "shell",
+			"command": "./tests/runtests.sh",
+			"isBackground": false
+		},
+		{
+			"label": "Syntax check dependency script",
+			"type": "shell",
+			"command": "python3",
+			"args": [
+				"-m",
+				"py_compile",
+				"scripts/check_dependencies.py"
+			],
+			"isBackground": false
 		}
 	]
 }

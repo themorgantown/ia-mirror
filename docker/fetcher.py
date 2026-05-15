@@ -808,6 +808,92 @@ def inject_env_args():
     # Insert new_args after the script name, preserving existing args
     sys.argv = [sys.argv[0]] + new_args + sys.argv[1:]
 
+
+def _env_flag_enabled(name: str) -> bool:
+    value = os.getenv(name)
+    return bool(value and value.lower() not in ("0", "false", "no", "off"))
+
+
+def _split_env_multi_value(value: str) -> List[str]:
+    return [part for part in (segment.strip() for segment in value.replace(" ", ",").split(",")) if part]
+
+
+def apply_env_defaults(args) -> None:
+    """Apply env-backed defaults even when some CLI args are already present."""
+    if getattr(args, "command", None) != "mirror":
+        return
+
+    bool_env_map = {
+        "IA_CHECKSUM": "checksum",
+        "IA_DRY_RUN": "dry_run",
+        "IA_RESUMEFOLDERS": "resumefolders",
+        "IA_VERIFY_ONLY": "verify_only",
+        "IA_ESTIMATE_ONLY": "estimate_only",
+        "IA_COLLECTION": "collection",
+        "IA_NO_LOCK": "no_lock",
+        "IA_NO_BACKOFF": "no_backoff",
+        "IA_USE_BATCH_SOURCE": "use_batch_source",
+        "IA_ON_THE_FLY": "on_the_fly",
+        "IA_XML_NAMES": "xml_names",
+        "IA_IGNORE_EXISTING": "ignore_existing",
+        "IA_NO_DIRECTORIES": "no_directories",
+        "IA_SYNC": "sync",
+    }
+    for env_name, attr_name in bool_env_map.items():
+        if _env_flag_enabled(env_name):
+            setattr(args, attr_name, True)
+
+    env_identifier = os.getenv("IA_IDENTIFIER") or os.getenv("IA_ITEM_NAME")
+    if env_identifier and not getattr(args, "identifier", None):
+        args.identifier = env_identifier
+
+    if not args.glob:
+        env_glob = os.getenv("IA_GLOB")
+        if env_glob:
+            args.glob = _split_env_multi_value(env_glob)
+
+    if not args.exclude:
+        env_exclude = os.getenv("IA_EXCLUDE")
+        if env_exclude:
+            args.exclude = _split_env_multi_value(env_exclude)
+
+    if not args.formats:
+        env_format = os.getenv("IA_FORMAT")
+        if env_format:
+            args.formats = _split_env_multi_value(env_format)
+
+    value_env_map = [
+        ("IA_DESTDIR", "destdir", None, str),
+        ("IA_IA_PATH", "ia_path", None, str),
+        ("IA_RETRIES", "retries", 5, int),
+        ("IA_PROGRESS_TIMEOUT", "progress_timeout", 900, int),
+        ("IA_MAX_TIMEOUT", "max_timeout", 7200, int),
+        ("IA_MAX_MBPS", "max_mbps", 0.0, float),
+        ("IA_MAX_Mbps", "max_mbps", 0.0, float),
+        ("IA_ASSUMED_MBPS", "assumed_mbps", 100.0, float),
+        ("IA_ASSUMED_Mbps", "assumed_mbps", 100.0, float),
+        ("IA_COST_PER_GB", "cost_per_gb", 0.0, float),
+        ("IA_SOURCE", "source", None, str),
+        ("IA_BACKOFF_BASE", "backoff_base", 2.0, float),
+        ("IA_BACKOFF_MAX", "backoff_max", 60.0, float),
+        ("IA_BACKOFF_MULTIPLIER", "backoff_multiplier", 2.0, float),
+        ("IA_BACKOFF_JITTER", "backoff_jitter", 0.25, float),
+        ("IA_BATCH_SOURCE_PATH", "batch_source_path", "batch_source.csv", str),
+        ("IA_VERIFY_MODE", "verify_mode", None, str),
+        ("IA_CONCURRENCY", "concurrency", 4, int),
+    ]
+    for env_name, attr_name, default_value, cast in value_env_map:
+        env_value = os.getenv(env_name)
+        if not env_value:
+            continue
+        current_value = getattr(args, attr_name, None)
+        if current_value not in (None, default_value):
+            continue
+        try:
+            setattr(args, attr_name, cast(env_value))
+        except (TypeError, ValueError):
+            logging.warning("Ignoring invalid value for %s: %s", env_name, env_value)
+
 def write_report(report_path: Path, data: dict):
     try:
         report_path.write_text(json.dumps(data, indent=2))
@@ -926,7 +1012,9 @@ def main():
     # Normalize argv for backward compatibility: if first argument is not a known subcommand, insert "mirror"
     import sys
     KNOWN_SUBCOMMANDS = {"mirror", "watch", "batch", "advanced", "help"}
-    if len(sys.argv) > 1 and sys.argv[1] not in KNOWN_SUBCOMMANDS:
+    if len(sys.argv) == 1:
+        sys.argv.append("mirror")
+    elif len(sys.argv) > 1 and sys.argv[1] not in KNOWN_SUBCOMMANDS:
         # Insert "mirror" subcommand before the identifier
         sys.argv.insert(1, "mirror")
 
@@ -1057,6 +1145,8 @@ def main():
     else:
         print(f"Unknown command: {args.command}")
         sys.exit(1)
+
+    apply_env_defaults(args)
 
     # Resolve verify mode
     if not args.verify_mode:

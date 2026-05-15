@@ -1,8 +1,9 @@
 """Flask application for ia-mirror Web UI."""
 
-import os
-import sys
 import json
+import os
+import secrets
+import sys
 import time
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
@@ -13,6 +14,21 @@ from .watcher import WatcherService
 from .parsing import parse_batch_input, validate_destination
 
 
+def _resolve_secret_key(config):
+    """Return an explicit or generated secret key for the Flask app."""
+    configured_secret = config.get('SECRET_KEY') or os.getenv('WEB_SECRET_KEY')
+    if configured_secret:
+        return configured_secret
+
+    generated_secret = secrets.token_hex(32)
+    print(
+        "WARNING: WEB_SECRET_KEY is not set. Generated an ephemeral secret key for this process. "
+        "Set WEB_SECRET_KEY for stable sessions across restarts.",
+        file=sys.stderr,
+    )
+    return generated_secret
+
+
 def create_app(config=None):
     """Create Flask application."""
     app = Flask(__name__, template_folder='../templates', static_folder='../static')
@@ -21,13 +37,10 @@ def create_app(config=None):
     # Configuration: read from environment or passed dict
     if config is None:
         config = {}
-    
-    secret_key = config.get('SECRET_KEY', os.getenv('WEB_SECRET_KEY', 'dev-secret-key'))
-    if secret_key == 'dev-secret-key':
-        import sys
-        print("WARNING: Using default secret key. Set WEB_SECRET_KEY environment variable for production.", file=sys.stderr)
+
+    secret_key = _resolve_secret_key(config)
     app.config['SECRET_KEY'] = secret_key
-    db_path = config.get('DB_PATH', os.getenv('WEB_DB_PATH', '/downloads/.ia-mirror/ui.db'))
+    db_path = config.get('DB_PATH', os.getenv('WEB_DB_PATH', '/data/ui.db'))
     runner_type = config.get('RUNNER_TYPE', os.getenv('WEB_RUNNER', 'real'))
     
     # Initialize storage

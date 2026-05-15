@@ -2,7 +2,7 @@
 import time
 import threading
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 import internetarchive
 try:
@@ -11,6 +11,15 @@ except ImportError:
     from storage import JobStorage
 
 logger = logging.getLogger(__name__)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Normalize datetimes to UTC-aware values."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 class WatcherService:
     """Background service to watch collections and queue new items."""
@@ -72,7 +81,7 @@ class WatcherService:
         last_checked_str = col['last_checked']
         interval = col['interval_seconds'] or 86400
 
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         
         # Parse last_checked
         last_checked = None
@@ -81,9 +90,9 @@ class WatcherService:
                 # SQLite often returns string, parse it
                 # Format is typically YYYY-MM-DD HH:MM:SS
                 if isinstance(last_checked_str, str):
-                    last_checked = datetime.fromisoformat(last_checked_str)
+                    last_checked = _as_utc(datetime.fromisoformat(last_checked_str))
                 else:
-                    last_checked = last_checked_str
+                    last_checked = _as_utc(last_checked_str)
             except Exception:
                 pass
 

@@ -1,6 +1,10 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## [1.0.2]
+
+# Webui! It mirrors, downloads, syncs and resumes! Run the docker-compose.yml and then visit: http://localhost:17865
+
+Webui features: 
 
 ## [Unreleased]
 

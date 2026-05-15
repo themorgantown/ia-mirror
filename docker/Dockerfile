@@ -1,7 +1,9 @@
-# Minimal MVP Dockerfile for IA mirror
-ARG IA_PYPI_VERSION="5.7.2"
-FROM python:3.13-slim AS base
+# Production image for ia-mirror
+ARG IA_PYPI_VERSION="5.8.0"
+ARG PROJECT_VERSION="1.0.2"
+FROM python:3.14.5-slim-trixie AS base
 ARG IA_PYPI_VERSION
+ARG PROJECT_VERSION
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=on \
@@ -54,11 +56,11 @@ EXPOSE 17865
 
 # Labels for OCI / Docker Hub
 LABEL org.opencontainers.image.title="ia-mirror" \
-    org.opencontainers.image.description="Minimal Internet Archive download/mirror utility (MVP)" \
+    org.opencontainers.image.description="Internet Archive download and mirroring utility with Web UI and CLI modes" \
     org.opencontainers.image.source="https://github.com/themorgantown/ia-mirror" \
     org.opencontainers.image.documentation="https://github.com/themorgantown/ia-mirror#readme" \
     org.opencontainers.image.licenses="MIT" \
-    org.opencontainers.image.version="${IA_PYPI_VERSION}" \
+    org.opencontainers.image.version="${PROJECT_VERSION}" \
     org.opencontainers.image.authors="Daniel Morgan"
 
 ENTRYPOINT ["/usr/bin/tini","--","/app/entrypoint.sh"]

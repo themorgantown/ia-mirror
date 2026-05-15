@@ -57,4 +57,5 @@ jobs:
             themorgantown/ia-mirror:${{ env.VERSION_NO_V }}
             themorgantown/ia-mirror:latest
           build-args: |
-            IA_PYPI_VERSION=5.5.0
+            IA_PYPI_VERSION=5.8.0
+            PROJECT_VERSION=${{ env.VERSION_NO_V }}

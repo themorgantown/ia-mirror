@@ -1,72 +1,106 @@
-# ia-mirror (Dockerized Internet Archive mirror utility)
+# ia-mirror
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/themorgantown/ia-mirror)](https://hub.docker.com/r/themorgantown/ia-mirror)  
+[![Docker Pulls](https://img.shields.io/docker/pulls/themorgantown/ia-mirror)](https://hub.docker.com/r/themorgantown/ia-mirror)
 
-Minimal Dockerized MVP for mirroring/downloading items from the Internet Archive using the `ia` CLI (via the `internetarchive` Python package).
+ia-mirror is a Docker-first Internet Archive mirroring utility. It wraps the `internetarchive` Python package and `ia` CLI with resumable downloads, batch queuing, structured reports, metadata caching, bandwidth throttling, and a persistent Web UI.
 
-This repository is great for large-scale, resumed, or complex downloads. It wraps the official Internet Archive Python library with advanced features like parallel downloads, bandwidth throttling, metadata caching, and a real-time health check server. It supports all major features of the official API plus powerful extras: multi-glob includes, exclude filters, smart resuming without redownloading metadata, format restrictions, lockfile safety, and structured JSON reports for dry-runs and estimates. Bonus: use `batch_source.csv` to run multiple mirrors in one go.
+Use reasonable concurrency, keep polite backoff enabled, and avoid unnecessary repeated metadata fetches. If you rely on Internet Archive heavily, consider donating at https://archive.org/donate/.
 
-Don't abuse the IA servers. Use reasonable concurrency, enable polite backoff (default), and consider caching metadata locally to reduce API pressure.
-IF you feel like donating to IA for bandwidth costs, consider supporting them at https://archive.org/donate/.
+## What It Does
 
-## QuickStart:
+- Mirrors or downloads Internet Archive items with resume support
+- Runs as either a Web UI queue manager or a direct CLI fetcher
+- Persists job history and UI state in SQLite
+- Emits per-item logs, status snapshots, and machine-readable `report.json`
+- Supports dry runs, estimates, checksum verification, sync mode, glob filters, and batch CSV input
 
-Pull the latest published image (recommended):
+## Runtime Modes
+
+The container starts in Web UI mode by default.
+
+| Mode | How it starts | Primary use |
+|------|---------------|-------------|
+| Web UI | `WEB_ENABLED=true` or unset | Queue jobs, manage history, run downloads through the browser |
+| CLI | `WEB_ENABLED=false` | Direct one-shot downloads or scripted runs |
+
+## Quick Start
+
+Pull the latest published image:
 
 ```bash
 docker pull themorgantown/ia-mirror:latest
 ```
 
-Locate the IA identifier you want to mirror (e.g., `The_Babe_Ruth_Collection`).
-Run the container, mounting a local directory for downloads and specifying the identifier:
-(First, get your IA credentials as described below.)
+### Web UI Mode (default)
 
-```
-docker run --rm \
+```bash
+docker run -d \
+  --name ia-mirror \
   -v "$PWD/mirror:/downloads" \
-  -e IA_IDENTIFIER=The_Babe_Ruth_Collection \
-  -e IA_DESTDIR=/downloads \
-  -e IA_ACCESS_KEY=your_access_key_here \
-  -e IA_SECRET_KEY=your_secret_key_here \
+  -v "$PWD/ia-state:/data" \
+  -p 17865:17865 \
+  -e WEB_SECRET_KEY="replace-with-a-long-random-value" \
   themorgantown/ia-mirror:latest
 ```
 
-1. Obtain archive.org credentials:
-  - Create an account (https://archive.org/account/login).
-  - Generate or locate your access key and secret at https://archive.org/account/s3.php.
+Open http://localhost:17865.
 
-2. Preferred (seamless): configure IA once on your host:
-  - Run: `ia configure`
-  - This writes `~/.config/ia/ia.ini` on your host.
-  - Start containers with this mount (read-only):
-    - `-v "$HOME/.config/ia:/home/app/.config/ia:ro"`
-  - Result: the Web UI and all jobs reuse your host auth without retyping keys.
+If `WEB_SECRET_KEY` is unset, the app now generates a random secret at startup. That is safe, but sessions will reset when the container restarts.
 
-3. Fallback (UI/env keys):
-  - Supply `IA_ACCESS_KEY` + `IA_SECRET_KEY` via env vars or the Web UI Global Settings modal.
-  - The entrypoint writes `/home/app/.config/ia/ia.ini` at runtime.
+### CLI Mode
 
-4. Docker secrets (production):
-  - Store `ia.ini` contents in a secret, mount it (for example `/run/secrets/ia.ini`), then copy it to `/home/app/.config/ia/ia.ini` at startup.
+```bash
+docker run --rm \
+  -v "$PWD/mirror:/downloads" \
+  -e WEB_ENABLED=false \
+  -e IA_IDENTIFIER=The_Babe_Ruth_Collection \
+  -e IA_DESTDIR=/downloads \
+  -e IA_DRY_RUN=true \
+  themorgantown/ia-mirror:latest
+```
 
-5. Verify inside a running container (optional):
-  - `docker exec -it <container> ia whoami`
+No credentials are needed for public-item dry runs.
 
-No credentials needed for public-item dry runs (use --dry-run).  
+## Authentication
 
-## Docker Compose (Recommended for Local Development)
+1. Preferred: run `ia configure` on the host, then mount `~/.config/ia:/home/app/.config/ia:ro`.
+2. Fallback: provide `IA_ACCESS_KEY` and `IA_SECRET_KEY` as environment variables or save them from the Web UI Global Settings panel.
+3. Production: mount an `ia.ini` secret and copy it into `/home/app/.config/ia/ia.ini` at startup.
+4. Optional verification: `docker exec -it <container> ia whoami`
 
-A `docker-compose.yml` is provided for easy local testing with sane defaults. It runs in dry-run mode by default to show what would be downloaded without actually fetching files. The Web UI is exposed on port 17865 by default.
+The entrypoint writes `/home/app/.config/ia/ia.ini` with mode `600` when credentials are supplied through environment variables.
 
-1. Edit `docker-compose.yml` and replace `example_item` with your actual IA identifier.
-2. (Optional) Create a `docker/live.env` file based on `docker/example.env` to manage your environment variables securely.
-3. Run: `docker-compose up`
-4. Open the Web UI at http://localhost:17865 to queue items and watch status.
-5. This will perform a dry-run download, showing estimates and what files would be fetched.
+## Ports
 
-### Seamless auth with Docker Compose (recommended)
+| Port | Variable | Purpose |
+|------|----------|---------|
+| `17865` | `WEB_PORT` | Web UI and API served by Gunicorn |
+| `8080` | `IA_HEALTH_PORT` | Fetcher health/report server for active download jobs |
 
-If you already ran `ia configure` on your host, mount that config into the container so credentials are automatically available:
+The container healthcheck targets `http://localhost:17865/api/status`.
+
+## Volumes and Persistence
+
+| Path | Required | Purpose |
+|------|----------|---------|
+| `/downloads` | Yes | Download destination, logs, reports, and status files |
+| `/data` | Required by default | Web UI SQLite database and persistent queue/history state |
+
+`/data` is only optional if you run exclusively in CLI mode with `WEB_ENABLED=false`.
+
+When `IA_DESTDIR=/downloads`, downloaded files land in `/downloads/<identifier>/...`, with logs and status files stored alongside that item directory.
+
+## Docker Compose
+
+`docker-compose.yml` is intended for local Web UI development and defaults to dry-run behavior.
+
+1. Copy the template: `cp docker/example.env docker/live.env`
+2. Edit `docker/live.env` with your credentials and settings
+3. Replace `example_item` in `docker-compose.yml` if needed
+4. Start the stack: `docker compose up -d`
+5. Open http://localhost:17865
+
+If you already configured `ia` on your host, mount it into the service:
 
 ```yaml
 services:
@@ -75,248 +109,257 @@ services:
       - ~/.config/ia:/home/app/.config/ia:ro
 ```
 
-Then start normally:
+To switch from dry run to real downloads, set `IA_DRY_RUN=0` in your compose env file.
 
-```bash
-docker compose up -d
-```
+## Web UI Workflow
 
-This is the preferred path for local development because you configure credentials once and reuse them everywhere.
+The Web UI accepts one identifier or URL per line.
 
-To switch to a real download:
-- Edit `docker-compose.yml` or your `.env` file and change `IA_DRY_RUN=1` to `IA_DRY_RUN=0`.
-- Or run: `docker-compose run --rm ia-mirror env IA_DRY_RUN=0`
+Examples:
 
-### Environment Variables (.env)
+- `baberuthstory0000ruth`
+- `https://archive.org/details/baberuthstory0000ruth`
+- `archive.org/details/baberuthstory0000ruth`
 
-The container supports loading environment variables from a `.env` file. 
-- **`docker/example.env`**: A comprehensive template containing all supported variables and their descriptions.
-- **`docker/live.env`**: (Recommended) Create this file to store your actual credentials and local configuration. It is ignored by git to prevent accidental credential leaks.
+The UI normalizes each line into an IA identifier, then enqueues jobs with the chosen operation and config.
 
-#### Setup and Usage
-1. **Copy the template**: `cp docker/example.env docker/live.env`
-2. **Configure**: Edit `docker/live.env` with your `IA_ACCESS_KEY`, `IA_SECRET_KEY`, and other preferences.
-3. **Run**: `docker-compose up` will automatically pick up these settings.
+Basic controls include:
 
-#### Key Variables
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `IA_IDENTIFIER` | The IA item or collection ID to mirror | (Required) |
-| `IA_ACCESS_KEY` | Your Internet Archive S3 Access Key | (Optional) |
-| `IA_SECRET_KEY` | Your Internet Archive S3 Secret Key | (Optional) |
-| `IA_DRY_RUN` | Set to `1` to simulate downloads without fetching | `1` (in compose) |
-| `IA_CONCURRENCY` | Number of parallel downloads | `8` |
-| `IA_DESTDIR` | Root directory for downloads inside container | `/downloads` |
-| `WEB_ENABLED` | Enable the Web UI | `true` |
+- destination under `/downloads`
+- operation type (`download`, `verify`, `sync`)
+- dry run
+- checksum verification
+- concurrency and bandwidth cap
+- glob, exclude, and format filters
+- collection mode and verify-only mode
 
-For a full list of variables and detailed descriptions, see [docker/example.env](docker/example.env).
+The Global Settings modal persists UI defaults and optional IA credentials to the SQLite database.
 
-Add credentials if needed (see QuickStart above).
+## Web UI API
 
-## Examples:
+### Configuration
 
-docker run --rm -v $(pwd)/mirror:/downloads -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/downloads" themorgantown/ia-mirror:latest
+- `GET /api/config`
+- `POST /api/config`
+- `GET /api/destinations`
+- `POST /api/destinations/validate`
 
-### With more parallel downloads
-docker run --rm -v $(pwd)/mirror:/downloads -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/downloads" -e IA_CONCURRENCY="10" themorgantown/ia-mirror:latest
+### Queue and job control
 
-### Dry run to see what would be downloaded
-docker run --rm -v $(pwd)/mirror:/downloads -e IA_IDENTIFIER="The_Babe_Ruth_Collection" -e IA_DESTDIR="/downloads" -e IA_DRY_RUN="true" themorgantown/ia-mirror:latest
+- `POST /api/queue/add`
+- `POST /api/queue/reorder`
+- `DELETE /api/queue/<id>`
+- `POST /api/job/start`
+- `POST /api/job/stop`
 
-### Verify-only (no downloads; checks local files)
-docker run --rm -v $(pwd)/mirror:/downloads themorgantown/ia-mirror:latest The_Babe_Ruth_Collection --destdir /downloads --verify-only
+### Status and history
 
-## Web UI (optional, enabled by default)
-- Default port: 17865 (change via `WEB_PORT`).
-- Compose example: `docker-compose up` then open http://localhost:17865.
-- Queue multiple IA identifiers, start/stop jobs, view live logs/history.
-- Mock runner available via `WEB_RUNNER=mock` for testing without network.
+- `GET /api/status`
+- `GET /api/jobs`
+- `GET /api/jobs/<id>`
+- `GET /api/jobs/<id>/log`
 
-## Quick concepts
-- **Native Python API**: This utility uses the `internetarchive` Python library directly for downloads, providing better control over parallelism and error handling than the standard CLI.
-- **State Management**: It maintains a `.ia_status/` directory within the destination folder. This contains JSON files tracking `pending` and `done` files, allowing the tool to resume interrupted downloads perfectly.
-- **Metadata Caching**: To reduce API pressure on IA, the tool fetches item metadata once and stores it locally as a "manifest" in `.ia_status/metadata.json`. This manifest is used for all subsequent logic (filtering, estimation, and verification).
-- **Native Throttling**: Bandwidth capping uses a native Python implementation (Token Bucket algorithm), ensuring portability across all architectures (amd64/arm64) without external dependencies like `trickle`.
-- **Health Monitoring**: A minimal web server (default port 8080) exposes the current `report.json` in real-time, allowing for easy integration with monitoring tools. The Web UI runs separately on port 17865 by default.
-- **Advanced Sync**: When enabled via `IA_SYNC`, the tool performs a true mirror by deleting local files that are no longer present in the remote IA item.
+### File browser
 
-# Development
+- `GET /api/files/list`
+- `GET /api/files/download`
+- `GET /api/files/content`
+- `POST /api/files/delete`
 
-## Build (local)
+The file browser is restricted to `/downloads` and rejects traversal attempts.
 
-Build a single-arch image (defaults to `IA_PYPI_VERSION=5.7.1`):
+### WebSocket events
 
-```bash
-docker build -t themorgantown/ia-mirror:0.4.0 -f docker/Dockerfile docker
-docker build --pull --rm -f docker/Dockerfile -t ia-mirror:local docker
-```
+Clients connect to `/` and can request status with `request_status`. The server emits `status_update`, `job_update`, `job_progress`, `log_line`, and `queue_update`.
 
-Multi-arch build (recommended for publishing):
+## CLI Examples
 
-```bash
-docker buildx create --use --name ia-builder || true
-docker buildx build --platform linux/amd64,linux/arm64 \
-  --build-arg IA_PYPI_VERSION=5.7.1 \
-  -t themorgantown/ia-mirror:0.4.0 --push -f docker/Dockerfile docker
-```
-
-## Usage examples
-
-Dry-run (no credentials needed for public items):
+### Dry run
 
 ```bash
 docker run --rm \
-  -v "$PWD/mirror:/data" \
-  -e IA_IDENTIFIER=jillem-full-archive \
-  themorgantown/ia-mirror:latest --dry-run
+  -v "$PWD/mirror:/downloads" \
+  -e WEB_ENABLED=false \
+  -e IA_IDENTIFIER=listofearlyameri00fren \
+  -e IA_DESTDIR=/downloads \
+  -e IA_DRY_RUN=true \
+  themorgantown/ia-mirror:latest
 ```
 
-Run with host `ia` config (quick):
+### Real download with host auth
 
 ```bash
 docker run --rm \
   -v "$HOME/.config/ia:/home/app/.config/ia:ro" \
-  -v "$PWD/mirror:/data" \
+  -v "$PWD/mirror:/downloads" \
+  -e WEB_ENABLED=false \
   -e IA_IDENTIFIER=jillem-full-archive \
+  -e IA_DESTDIR=/downloads \
   -e IA_CONCURRENCY=6 \
   -e IA_CHECKSUM=1 \
   themorgantown/ia-mirror:latest
 ```
 
-Run using env creds (safer than mounting whole config):
+### Verify only
 
 ```bash
 docker run --rm \
-  -v "$PWD/mirror:/data" \
-  -e IA_IDENTIFIER=jillem-full-archive \
-  -e IA_ACCESS_KEY=AKXXX -e IA_SECRET_KEY=SKYYY \
-  -e IA_CONCURRENCY=6 \
-  themorgantown/ia-mirror:latest
+  -v "$PWD/mirror:/downloads" \
+  -e WEB_ENABLED=false \
+  themorgantown/ia-mirror:latest \
+  The_Babe_Ruth_Collection --destdir /downloads --verify-only
 ```
 
-  ### Batch mode (multiple items from CSV)
+### Batch mode
 
-  Create a CSV with two columns: `source` (IA identifier) and `destdir` (target path inside container):
+Create a CSV with `source` and `destdir` columns:
 
-  `batch_source.csv`
-Note only source and destdir are required; other columns are optional:
-  ```
-  source,destdir,glob,exclude,format,concurrency,verify_mode
-  The_Babe_Ruth_Collection,/downloads/The_Babe_Ruth_Collection,*.mp3,,mp3,10,checksum
-  jillem-full-archive,/downloads/jillem-full-archive,,*_thumb.jpg,,5,size
-  ```
+```csv
+source,destdir,glob,exclude,format,concurrency,verify_mode
+The_Babe_Ruth_Collection,/downloads/The_Babe_Ruth_Collection,*.mp3,,mp3,10,checksum
+jillem-full-archive,/downloads/jillem-full-archive,,*_thumb.jpg,,5,size
+```
 
-  Run the container with batch mode enabled (mount the CSV and set dest roots as needed):
-
-  ```bash
-  docker run --rm \
-    -v "$PWD/mirror:/downloads" \
-    -v "$PWD/batch_source.csv:/app/batch_source.csv:ro" \
-    -e IA_ACCESS_KEY=AKXXX -e IA_SECRET_KEY=SKYYY \
-    themorgantown/ia-mirror:latest --use-batch-source --batch-source-path /app/batch_source.csv
-  ```
-  All other flags (e.g., `-g`, `-x`, `-f`, `-j`, `--checksum`) apply to every row in the CSV.
-
-Recommended for production: use Docker secrets or your orchestration's secret mechanism and inject into the container as env vars or bind a single secret file as `/run/secrets/ia.ini` then copy into `/home/app/.config/ia/ia.ini` at startup.
-
-## Config / ENV variables
-- IA_IDENTIFIER (required) — item or collection identifier
-- IA_DESTDIR — destination directory under /downloads (container resolves path)
-- IA_GLOB (-g) — include glob; can be repeated or comma-separated (default `*`)
-- IA_EXCLUDE (-x) — exclude glob(s); can be repeated or comma-separated
-- IA_FORMAT (-f) — restrict to extensions (e.g., `mp3,flac`)
-- IA_CONCURRENCY (-j) — parallel workers (default 5)
-- IA_CHECKSUM — enable checksums (alias for `IA_VERIFY_MODE=checksum`)
-- IA_VERIFY_MODE — verification level: `exists`, `size` (default), or `checksum`
-- IA_DRY_RUN — dry-run
-- IA_VERIFY_ONLY — only verify existing files
-- IA_ESTIMATE_ONLY — only output size/time/cost estimates and exit
-- IA_COLLECTION — treat identifier as collection
-- IA_RESUMEFOLDERS — only consider .zip files and skip any zip whose folder already exists
-- IA_SYNC — if truthy, enables sync mode (deletes local files not present in IA)
-- IA_MAX_MBPS (optional) — bandwidth cap in Mbps; default off. Only applies if set (>0). Uses native Python throttling.
-- IA_HEALTH_PORT — port for the internal health check server (default 8080; set to 0 to disable)
-- IA_ASSUMED_MBPS — used for ETA/estimate math when uncapped (default 100)
-- IA_COST_PER_GB — include egress cost estimate
-- IA_SOURCE — filter by source type: `original`, `derivative`, or `metadata`
-- IA_ON_THE_FLY — enable dynamic zip generation
-- IA_XML_NAMES — use filenames from metadata XML
-- IA_IGNORE_EXISTING — skip files if they exist without size/checksum check
-- IA_NO_DIRECTORIES — flatten download into a single directory
-- IA_FORCE_METADATA_UPDATE — force refresh of local metadata manifest
-- Polite backoff (enabled by default):
-  - IA_NO_BACKOFF — set truthy to disable exponential backoff
-  - IA_BACKOFF_BASE, IA_BACKOFF_MAX, IA_BACKOFF_MULTIPLIER, IA_BACKOFF_JITTER — tune backoff (defaults: 2s, 60s, 2.0, 0.25)
-- IA_LOG_LEVEL — INFO/DEBUG/ERROR (controls stdout/file logging)
-- IA_NO_LOCK — set truthy to disable lockfile (not recommended)
-- IA_USE_BATCH_SOURCE — truthy to enable batch mode
-- IA_BATCH_SOURCE_PATH — path to batch CSV (default `./batch_source.csv`)
-- IA_ACCESS_KEY / IA_SECRET_KEY — short-lived env-based credentials
-
- 
-## Files & outputs
-- Download destination: `/downloads/<identifier>` (unless `--destdir` provided)
-- Status dir: `/downloads/<identifier>/.ia_status/<identifier>.json`
-- Lockfile: `/downloads/<identifier>/.ia_status/lock.json` (auto-removed on exit)
-- Snapshot report: `/downloads/<identifier>/report.json`
-- Log file: `/downloads/<identifier>/ia_download.log` (also streamed to stdout)
-
-## Volume Layout
-
-The container uses two primary volumes:
-- **/downloads**: The destination for all downloaded content, logs, and job reports. Map this to a host directory with enough storage space.
-- **/data**: Stores persistent application state, specifically the SQLite database (`ui.db`) for the Web UI queue and history. Map this to a host directory to preserve your job history across container restarts.
-
-Note on `--destdir` layout: the underlying `ia` CLI writes files under `<destdir>/<identifier>/...`. When you set `IA_DESTDIR=/downloads`, this wrapper resolves the working directory to `/downloads/<identifier>` for logs/status, and instructs `ia` to write to `/downloads` so files land in `/downloads/<identifier>/...` (no double-nesting). Using the examples above will produce the expected layout.
-
-Report behavior:
-- `--dry-run` now writes a structured `report.json` summarizing totals and simulated ETA.
-- `--estimate-only` writes a structured `report.json` with known/remaining bytes and estimated seconds, then exits without downloading.
-
-## Troubleshooting
-- If the image cannot find `ia`, ensure the `internetarchive` package version installed in the image provides the `ia` CLI (we pin with `IA_PYPI_VERSION` build arg). You can also bind a local `ia` binary into `/app/ia`.
-- If you hit an issue, make an issue: https://github.com/themorgantown/ia-mirror/issues
-
-# Security
-
-This project is provided as-is without warranties. When using credentials, ensure they are handled securely (e.g., avoid mounting host config with sensitive data in shared environments). Consider using short-lived credentials or Docker secrets for production use.
-
-## Security Scanning
-
-This project uses [Docker Scout](https://docs.docker.com/scout/) to monitor for vulnerabilities.
-
-### Automated Scanning
-A GitHub Action runs monthly to scan the image. If high-severity vulnerabilities are found or if the base image has critical updates, a GitHub Issue is automatically created with a remediation report.
-
-### Local Scanning
-You can run Docker Scout locally to check the image before pushing:
+Run it with:
 
 ```bash
-# Build the image
+docker run --rm \
+  -v "$PWD/mirror:/downloads" \
+  -v "$PWD/batch_source.csv:/app/batch_source.csv:ro" \
+  -e WEB_ENABLED=false \
+  -e IA_ACCESS_KEY=AKXXX \
+  -e IA_SECRET_KEY=SKYYY \
+  themorgantown/ia-mirror:latest \
+  --use-batch-source --batch-source-path /app/batch_source.csv
+```
+
+## Key Environment Variables
+
+See [docker/example.env](docker/example.env) for the full template.
+
+### Web UI
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `WEB_ENABLED` | `true` | Starts the Web UI unless explicitly disabled |
+| `WEB_HOST` | `0.0.0.0` | Gunicorn bind host |
+| `WEB_PORT` | `17865` | Web UI listen port |
+| `WEB_DB_PATH` | `/data/ui.db` | SQLite database path used by the entrypoint |
+| `WEB_RUNNER` | `real` | `real` or `mock` |
+| `WEB_SECRET_KEY` | generated at startup if unset | Set explicitly for stable sessions |
+
+### Fetcher / CLI
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `IA_IDENTIFIER` | none | Required unless provided as a CLI arg |
+| `IA_DESTDIR` | `/downloads` | Root destination directory |
+| `IA_CONCURRENCY` | `5` | Parallel workers |
+| `IA_DRY_RUN` | `false` | Simulate downloads |
+| `IA_VERIFY_MODE` | `size` | `exists`, `size`, or `checksum` |
+| `IA_CHECKSUM` | unset | Shortcut for checksum verification |
+| `IA_SYNC` | unset | Deletes local files that no longer exist remotely |
+| `IA_MAX_MBPS` | unset | Native Python throttling |
+| `IA_HEALTH_PORT` | `8080` | Disable with `0` |
+| `IA_USE_BATCH_SOURCE` | unset | Enables CSV batch mode |
+| `IA_BATCH_SOURCE_PATH` | `./batch_source.csv` | Batch CSV path |
+
+## Outputs
+
+Per item, ia-mirror writes:
+
+- `/downloads/<identifier>/ia_download.log`
+- `/downloads/<identifier>/report.json`
+- `/downloads/<identifier>/.ia_status/<identifier>.json`
+- `/downloads/<identifier>/.ia_status/lock.json`
+
+`report.json` is produced for dry runs and estimate-only runs as well as completed downloads.
+
+## Development
+
+### Build locally
+
+```bash
+docker build --pull --rm -f docker/Dockerfile -t ia-mirror:local docker
+```
+
+Multi-arch release build example:
+
+```bash
+docker buildx create --use --name ia-builder || true
+docker buildx build --platform linux/amd64,linux/arm64 \
+  --build-arg IA_PYPI_VERSION=5.8.0 \
+  --build-arg PROJECT_VERSION=$(cat VERSION) \
+  -t themorgantown/ia-mirror:$(cat VERSION) --push -f docker/Dockerfile docker
+```
+
+### Useful commands
+
+```bash
+python -m py_compile docker/fetcher.py
+docker run --rm ia-mirror:local --print-effective-config
+./tests/runtests.sh
+```
+
+## Security and Release Readiness
+
+- Container runs as the non-root `app` user.
+- Environment-provided IA credentials are written with restrictive permissions.
+- The Web UI no longer ships with a static default secret; an ephemeral secret is generated when `WEB_SECRET_KEY` is unset.
+- The repository runs `pip-audit`, Dockerfile linting, image builds, and SBOM generation in CI.
+- Docker Scout monitoring runs on a schedule for image vulnerability review.
+
+For local image scanning:
+
+```bash
 docker build -f docker/Dockerfile -t ia-mirror:local docker
-
-# Quick overview
 docker scout quickview ia-mirror:local
-
-# Detailed CVE scan
 docker scout cves ia-mirror:local
-
-# Check for base image updates
 docker scout recommendations ia-mirror:local
 ```
 
 ## Testing
 
-The project includes a consolidated test suite that runs:
-1. Python Unit Tests (backend logic)
-2. Command Line Integration Tests
-3. Web UI Integration Tests
+The existing release gate is the full test suite in [tests/runtests.sh](tests/runtests.sh). It covers Python backend tests, CLI integration tests, and Web UI integration tests.
 
-To run the full suite:
+To run everything:
 
 ```bash
-./tests/run_tests.sh
+./tests/runtests.sh
 ```
 
-The script will automatically build a test Docker image and run all tests against it. Output is stored in `tests/test_output/`.
+Test artifacts are written under `tests/test_output/`.
 
+## Troubleshooting
+
+### Web UI port already in use
+
+```bash
+docker run -d \
+  -v "$PWD/mirror:/downloads" \
+  -v "$PWD/ia-state:/data" \
+  -p 9090:17865 \
+  themorgantown/ia-mirror:latest
+```
+
+Then open http://localhost:9090.
+
+### Database is locked
+
+Only one container should write to the same `WEB_DB_PATH` at a time.
+
+### Jobs are queued but not running
+
+Check:
+
+- `WEB_RUNNER=real`
+- valid IA credentials for private content
+- container logs with `docker logs <container>`
+
+### WebSocket updates do not appear
+
+Check browser console errors, verify that the mapped Web UI port is reachable, and try a hard refresh.
+
+## Support
+
+If the image cannot find `ia`, verify that the image was built with the intended `IA_PYPI_VERSION`. If you hit a bug, open an issue at https://github.com/themorgantown/ia-mirror/issues.

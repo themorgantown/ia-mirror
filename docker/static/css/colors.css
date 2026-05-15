@@ -1,36 +1,57 @@
-/* Standard Dark Mode Palette (Slate/Zinc) */
+/* 1999 Design System - Dark Mode */
 :root {
-  /* Base Colors (Slate-like) */
-  --color-bg: #0f172a;        /* Slate 900 */
-  --color-surface: #1e293b;   /* Slate 800 */
-  --color-surface-hover: #334155; /* Slate 700 */
-  --color-border: #334155;    /* Slate 700 */
-  
+  /* Base Colors (Craigslist 1999 Dark Mode) */
+  --color-bg: #0A0A0A;        /* near-black, reminiscent of old terminal screens */
+  --color-surface: #1A1A1A;   /* slightly lighter for content areas */
+  --color-surface-hover: #222222; /* hover state */
+  --color-border: #333333;    /* dark gray */
+
   /* Text Colors */
-  --color-text-main: #f8fafc; /* Slate 50 */
-  --color-text-muted: #94a3b8; /* Slate 400 */
-  --color-text-inverse: #0f172a; /* Slate 900 */
+  --color-text-main: #E0E0E0; /* off-white, easy on eyes */
+  --color-text-muted: #AAAAAA; /* muted text */
+  --color-text-inverse: #0A0A0A; /* for text on light backgrounds */
 
-  /* Brand / Accents */
-  --hue-primary: 220;
-  --color-primary: hsl(var(--hue-primary), 90%, 60%);       /* Lighter blue for dark mode */
-  --color-primary-hover: hsl(var(--hue-primary), 90%, 55%);
-  --color-primary-subtle: rgba(56, 189, 248, 0.15);         /* Translucent blue */
-  
-  --color-success: #34d399;   /* Emerald 400 */
-  --color-danger: #f87171;    /* Red 400 */
-  --color-warning: #fbbf24;   /* Amber 400 */
-  --color-info: #38bdf8;      /* Sky 400 */
+  /* Links */
+  --color-link: #5C9EFF;      /* softer blue, maintains contrast */
+  --color-link-visited: #B28BFF; /* softer purple */
 
-  /* Shadows (adapted for dark mode) */
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
-  --shadow-soft: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.2);
+  /* Accent */
+  --color-accent: #FF8C42;    /* softer orange - Craigslist accent */
+  --color-accent-hover: #FF7321; /* darker orange on hover */
 
-  /* Radius */
-  --radius-sm: 0.375rem; /* 6px */
-  --radius-md: 0.5rem;   /* 8px */
-  --radius-lg: 0.75rem;  /* 12px */
-  --radius-xl: 1rem;     /* 16px */
+  /* Semantic Colors */
+  --color-success: #00AA00;   /* green */
+  --color-success-hover: #008800; /* darker green */
+  --color-warning: #FFAA00;   /* amber */
+  --color-warning-hover: #DD9900; /* darker amber */
+  --color-error: #FF4444;     /* red */
+  --color-error-hover: #CC0000; /* darker red */
+  --color-info: #0088FF;      /* blue */
+  --color-info-hover: #0077DD; /* darker blue */
+
+  /* Shadows - Minimal or none for utilitarian design */
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-soft: none;
+
+  /* Radius - Sharp corners for utilitarian design */
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+
+  /* Bootstrap theme overrides */
+  --bs-primary: #FF8C42;
+  --bs-primary-rgb: 255, 140, 66;
+  --bs-secondary: #AAAAAA;
+  --bs-success: #00AA00;
+  --bs-info: #0088FF;
+  --bs-warning: #FFAA00;
+  --bs-danger: #FF4444;
+  --bs-light: #1A1A1A;
+  --bs-dark: #0A0A0A;
+  --bs-body-bg: #0A0A0A;
+  --bs-body-color: #E0E0E0;
+  --bs-border-color: #333333;
 }

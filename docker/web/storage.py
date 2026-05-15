@@ -4,7 +4,7 @@ import sqlite3
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from contextlib import contextmanager
 from typing import List, Dict, Optional
 
@@ -101,6 +101,17 @@ class JobStorage:
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS watched_collections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    identifier TEXT NOT NULL UNIQUE,
+                    watch_type TEXT NOT NULL,
+                    interval_seconds INTEGER DEFAULT 86400,
+                    last_checked TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
             # Initialize worker state if empty (idle by default)
             conn.execute("INSERT OR IGNORE INTO worker_state (id, is_processing_queue) VALUES (1, 0)")
@@ -193,7 +204,7 @@ class JobStorage:
         """Get recent completed/failed downloads within the past N days."""
         days = max(1, int(days))
         limit = max(1, int(limit))
-        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
 
         with self._get_conn() as conn:
             rows = conn.execute(

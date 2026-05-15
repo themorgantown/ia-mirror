@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Combined Integration Tests for ia-mirror (CLI + UI + Unit)
-# Runs unit tests first, then dry-run tests in parallel, then download tests, then UI integration tests.
+# Consolidated test runner for ia-mirror.
+# Runs Python tests in Docker, then CLI integration tests, then Web UI integration tests.
 
 set -u
 
@@ -167,22 +167,19 @@ docker build -t "$IMAGE" -f "$REPO_ROOT_HOST/docker/Dockerfile" "$REPO_ROOT_HOST
 }
 
 # -----------------------------------------------------------------------------
-# 2. Run Python Unit Tests (inside Docker)
+# 2. Run Python Tests (inside Docker)
 # -----------------------------------------------------------------------------
-echo -e "${BLUE}Running Python Unit Tests...${NC}"
-# Use a custom entrypoint or just override it to run pytest
-# We mount the tests directory into /app/tests so the container can access test_ui.py
-# We run from /app so that 'web' package is importable (it exists at /app/web in the image)
+echo -e "${BLUE}Running Python tests...${NC}"
 if docker run --rm --entrypoint "" \
     -v "$SCRIPT_DIR_HOST:/app/tests" \
     -w /app \
-    "$IMAGE" pytest /app/tests/test_ui.py > "$OUTPUT_DIR/unit_tests.log" 2>&1; then
-    echo -e "${GREEN}✓ Unit Tests PASS${NC}"
+    "$IMAGE" pytest /app/tests > "$OUTPUT_DIR/python_tests.log" 2>&1; then
+    echo -e "${GREEN}✓ Python Tests PASS${NC}"
 else
-    echo -e "${RED}✗ Unit Tests FAIL${NC}"
-    head -n 20 "$OUTPUT_DIR/unit_tests.log"
+    echo -e "${RED}✗ Python Tests FAIL${NC}"
+    head -n 20 "$OUTPUT_DIR/python_tests.log"
     echo "..."
-    tail -n 10 "$OUTPUT_DIR/unit_tests.log"
+    tail -n 10 "$OUTPUT_DIR/python_tests.log"
     exit 1
 fi
 
@@ -497,6 +494,46 @@ test_20_resumefolders() {
     fi
 }
 
+rerun_missing_parallel_results() {
+    local missing=()
+    local expected=(
+        test00 test01 test02 test03 test04 test05 test06 test07
+        test09 test10 test16 test17 test18 test19 test20
+    )
+
+    for id in "${expected[@]}"; do
+        if [ ! -f "$OUTPUT_DIR/$id.result" ]; then
+            missing+=("$id")
+        fi
+    done
+
+    if [ "${#missing[@]}" -eq 0 ]; then
+        return
+    fi
+
+    echo -e "${YELLOW}Missing parallel result files: ${missing[*]}. Re-running those tests sequentially for reliable accounting.${NC}"
+
+    for id in "${missing[@]}"; do
+        case "$id" in
+            test00) test_00_invalid_config ;;
+            test01) test_01_dry_run ;;
+            test02) test_02_estimate ;;
+            test03) test_03_glob ;;
+            test04) test_04_exclude ;;
+            test05) test_05_format ;;
+            test06) test_06_config ;;
+            test07) test_07_batch ;;
+            test09) test_09_lock ;;
+            test10) test_10_backoff ;;
+            test16) test_16_source ;;
+            test17) test_17_ignore ;;
+            test18) test_18_nolock ;;
+            test19) test_19_forcemeta ;;
+            test20) test_20_resumefolders ;;
+        esac
+    done
+}
+
 # --- Real Download Tests (Sequential) ---
 
 test_08_download_small() {
@@ -565,7 +602,7 @@ test_14_checksum() {
     mkdir -p "$TEST_DIR"
     
     # First download clean
-    docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
+    timeout 120 docker run --rm -e WEB_ENABLED=false $AUTH_ARGS \
         -v "$(host_path "$TEST_DIR"):/downloads" \
         -e IA_IDENTIFIER=synth_psr60 \
         "$IMAGE" > /dev/null 2>&1 || true
@@ -612,58 +649,54 @@ test_15_verify() {
 
 # --- UI Tests ---
 
-test_ui() {
+run_web_ui_integration_test() {
     local ID="test_ui"
     local DESC="Web UI Integration Tests"
-    local CONTAINER_NAME="ia-mirror-test-ui"
-    
-    # Cleanup previous
+    local CONTAINER_NAME="ia-mirror-test-ui-suite"
+    local TEST_PORT=17866
+    local FAILED=0
+    local LOG="$OUTPUT_DIR/$ID.log"
+
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    
-    # Start container
+
     docker run -d --name "$CONTAINER_NAME" \
-        -p 17866:17865 \
+        -p "$TEST_PORT:17865" \
         -v "$OUTPUT_DIR_HOST:/downloads" \
         -e WEB_ENABLED=true \
         -e WEB_PORT=17865 \
         -e WEB_RUNNER=mock \
         "$IMAGE" > "$OUTPUT_DIR/$ID.start.log" 2>&1
 
-    # Wait for start
     local READY=0
-    for i in {1..30}; do
-        if curl -s http://localhost:17866/ > /dev/null 2>&1; then
+    for _ in {1..30}; do
+        if curl -s "http://localhost:$TEST_PORT/" >/dev/null 2>&1; then
             READY=1
             break
         fi
         sleep 1
     done
-    
-    if [ $READY -eq 0 ]; then
+
+    if [ "$READY" -eq 0 ]; then
+        docker logs "$CONTAINER_NAME" > "$OUTPUT_DIR/$ID.docker.log" 2>&1 || true
+        docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
         record_result "$ID" "FAIL" "$DESC - Container failed to start"
-        docker logs "$CONTAINER_NAME" > "$OUTPUT_DIR/$ID.docker.log" 2>&1
-        docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1
         return
     fi
-    
-    local FAILED=0
-    local LOG="$OUTPUT_DIR/$ID.log"
+
     echo "Starting UI checks..." > "$LOG"
 
-    # 1. HTML check
-    if ! curl -s http://localhost:17866/ | grep -q "ia-mirror"; then
+    if ! curl -s "http://localhost:$TEST_PORT/" | grep -q "ia-mirror"; then
         echo "FAIL: HTML check" >> "$LOG"
         FAILED=1
     fi
-    
-    # 2. Config Endpoint
-    if ! curl -s http://localhost:17866/api/config | grep -q "destination"; then
+
+    if ! curl -s "http://localhost:$TEST_PORT/api/config" | grep -q "destination"; then
         echo "FAIL: Config endpoint" >> "$LOG"
         FAILED=1
     fi
 
-    # 3. Add to Queue (Using 1 item to be faster)
-    RESPONSE=$(curl -s -X POST http://localhost:17866/api/queue/add \
+    local RESPONSE
+    RESPONSE=$(curl -s -X POST "http://localhost:$TEST_PORT/api/queue/add" \
         -H "Content-Type: application/json" \
         -d '{
             "text": "item1",
@@ -675,27 +708,25 @@ test_ui() {
         FAILED=1
     fi
 
-    # 4. Check Queue Length
-    STATUS=$(curl -s http://localhost:17866/api/status)
-    # Using python to parse json safely for test
-    QUEUE_LEN=$(echo "$STATUS" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))")
+    local STATUS QUEUE_LEN
+    STATUS=$(curl -s "http://localhost:$TEST_PORT/api/status")
+    QUEUE_LEN=$(echo "$STATUS" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))" 2>/dev/null || echo 0)
     if [ "$QUEUE_LEN" -lt 1 ]; then
         echo "FAIL: Queue length expected >= 1, got $QUEUE_LEN" >> "$LOG"
         FAILED=1
     fi
 
-    # 4b. Test Removal
-    JOB_ID=$(echo "$RESPONSE" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin)['job_ids'][0])")
-    REMOVE_RESP=$(curl -s -X DELETE "http://localhost:17866/api/queue/$JOB_ID")
-    STATUS_AFTER=$(curl -s http://localhost:17866/api/status)
-    Q_LEN_AFTER=$(echo "$STATUS_AFTER" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))")
+    local JOB_ID REMOVE_RESP STATUS_AFTER Q_LEN_AFTER
+    JOB_ID=$(echo "$RESPONSE" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin)['job_ids'][0])" 2>/dev/null || echo 0)
+    REMOVE_RESP=$(curl -s -X DELETE "http://localhost:$TEST_PORT/api/queue/$JOB_ID")
+    STATUS_AFTER=$(curl -s "http://localhost:$TEST_PORT/api/status")
+    Q_LEN_AFTER=$(echo "$STATUS_AFTER" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))" 2>/dev/null || echo 0)
     if [ "$Q_LEN_AFTER" -ne 0 ]; then
-        echo "FAIL: Queue item was not removed. Q_LEN: $Q_LEN_AFTER" >> "$LOG"
+        echo "FAIL: Queue item was not removed. Response: $REMOVE_RESP" >> "$LOG"
         FAILED=1
     fi
 
-    # 4c. Add back for subsequent tests
-    curl -s -X POST http://localhost:17866/api/queue/add \
+    curl -s -X POST "http://localhost:$TEST_PORT/api/queue/add" \
         -H "Content-Type: application/json" \
         -d '{
             "text": "item1",
@@ -703,41 +734,38 @@ test_ui() {
             "config": {"destination": "/downloads", "concurrency": 4}
         }' > /dev/null
 
-    # 5. Start Job (Mock)
-    START_RESP=$(curl -s -X POST http://localhost:17866/api/job/start)
+    local START_RESP
+    START_RESP=$(curl -s -X POST "http://localhost:$TEST_PORT/api/job/start")
     if ! echo "$START_RESP" | grep -q "started"; then
         echo "FAIL: Start job. Response: $START_RESP" >> "$LOG"
         FAILED=1
     fi
 
-    # 6. Wait for completion (Mock runner is fast, but give it time)
-    local COMPLETED=0
-    for i in {1..60}; do
+    local COMPLETED=0 JOBS HISTORY_COUNT
+    for _ in {1..60}; do
         sleep 1
-        STATUS=$(curl -s http://localhost:17866/api/status)
-        Q_LEN=$(echo "$STATUS" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))")
-        if [ "$Q_LEN" -eq 0 ]; then
+        STATUS=$(curl -s "http://localhost:$TEST_PORT/api/status")
+        QUEUE_LEN=$(echo "$STATUS" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))" 2>/dev/null || echo 0)
+        if [ "$QUEUE_LEN" -eq 0 ]; then
             COMPLETED=1
             break
         fi
     done
-    if [ $COMPLETED -eq 0 ]; then
+    if [ "$COMPLETED" -eq 0 ]; then
         echo "FAIL: Jobs did not complete in time" >> "$LOG"
         FAILED=1
     fi
 
-    # 7. Check History
-    JOBS=$(curl -s http://localhost:17866/api/jobs)
-    count=$(echo "$JOBS" | "$PYTHON_BIN" -c "import sys, json; print(len([j for j in json.load(sys.stdin)['jobs'] if j['status'] in ['completed', 'failed']]))")
-    if [ "$count" -eq 0 ]; then
+    JOBS=$(curl -s "http://localhost:$TEST_PORT/api/jobs")
+    HISTORY_COUNT=$(echo "$JOBS" | "$PYTHON_BIN" -c "import sys, json; print(len([j for j in json.load(sys.stdin)['jobs'] if j['status'] in ['completed', 'failed']]))" 2>/dev/null || echo 0)
+    if [ "$HISTORY_COUNT" -eq 0 ]; then
         echo "FAIL: No completed jobs in history" >> "$LOG"
         FAILED=1
     fi
 
-    # Cleanup
-    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1
-    
-    if [ $FAILED -eq 0 ]; then
+    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+    if [ "$FAILED" -eq 0 ]; then
         record_result "$ID" "PASS" "$DESC"
     else
         record_result "$ID" "FAIL" "$DESC - See $LOG"
@@ -764,6 +792,7 @@ test_19_forcemeta &
 test_20_resumefolders &
 
 wait
+rerun_missing_parallel_results
 
 echo -e "${BLUE}Running Download Tests (Sequential)...${NC}"
 test_08_download_small
@@ -773,7 +802,7 @@ test_14_checksum
 test_15_verify
 
 echo -e "${BLUE}Running UI Tests...${NC}"
-test_ui
+run_web_ui_integration_test
 
 # --- Summary ---
 PASSED=$(cat "$OUTPUT_DIR"/*.result 2>/dev/null | grep -c "^PASS" || true)

@@ -19,6 +19,10 @@ ia_download.log
 test_sync/*
 tests/test_output/
 tests/test_run.log
+tests/test_output/*.log
+tests/test_output/**/*.log
+tests/test_output/*
+tests/runtests.log
 run.log
 # python cache
 __pycache__/
@@ -28,3 +32,8 @@ downloads/
 test_results.txt
 future.md
 ui-plan.md
+.agents/
+CLAUDE.md
+.impeccable.md
+.gitignore
+*.log

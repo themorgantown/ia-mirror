@@ -27,11 +27,15 @@ class IAMirrorUI {
 
         this.setupEventListeners();
         this.setupSocketListeners();
+        this.setupLogViewer();
         this.requestNotificationPermission();
         
         // Defer non-critical initial data loads to after first paint
         requestAnimationFrame(() => {
+            this.loadDestinationHint();
+            this.loadRecentDownloads();
             this.loadStatus();
+            this.updateDestinationPath();
             this.updateAsciiConsole(this.queueLength);
         });
     }
@@ -62,6 +66,7 @@ class IAMirrorUI {
         batchInput?.addEventListener('change', () => this.validateBatchInput());
         batchInput?.addEventListener('blur', () => this.validateBatchInput());
         batchInput?.addEventListener('input', () => this.validateBatchInput()); // Add input listener for realtime feedback
+        batchInput?.addEventListener('input', () => this.updateDestinationPath());
 
         // Buttons
         document.getElementById('start-download-btn')?.addEventListener('click', () => this.startDownload());
@@ -102,7 +107,55 @@ class IAMirrorUI {
         });
     }
 
+    setupLogViewer() {
+        const btn = document.getElementById('view-log-btn');
+        if (btn) {
+            btn.addEventListener('click', () => this.showLogModal());
+        }
+        
+        const refreshBtn = document.getElementById('refresh-log-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => this.refreshLog());
+        }
+    }
+
+    async showLogModal() {
+        if (!this.currentJob) return;
+        
+        const logModalEl = document.getElementById('logModal');
+        if (!logModalEl) return;
+        
+        const modal = new bootstrap.Modal(logModalEl);
+        modal.show();
+        
+        document.getElementById('log-modal-title').textContent = `Log: ${this.currentJob.identifier}`;
+        this.refreshLog();
+    }
     
+    async refreshLog() {
+        if (!this.currentJob) return;
+        
+        const contentEl = document.getElementById('log-content');
+        if (!contentEl) return;
+        
+        // Only show loading on first load or manual refresh, not polling if we add that later
+        if (!contentEl.textContent) contentEl.textContent = 'Loading...';
+        
+        try {
+            const response = await fetch(`/api/jobs/${this.currentJob.id}/log?format=json`);
+            if (response.ok) {
+                const data = await response.json();
+                contentEl.textContent = data.content || 'No log content available.';
+                // Scroll to bottom
+                contentEl.parentElement.scrollTop = contentEl.parentElement.scrollHeight;
+            } else {
+                contentEl.textContent = 'Failed to load log. (Log file might not exist yet)';
+            }
+        } catch (e) {
+            console.error(e);
+            contentEl.textContent = 'Error loading log.';
+        }
+    }
 
 
     // ============ Batch Input & Validation ============
@@ -311,6 +364,7 @@ class IAMirrorUI {
                 const statusPrefix = data.status === 'queued' ? 'Queued' : 'Started';
                 this.setActionStatus(`${statusPrefix} ${data.valid_count} job(s)${extra}`, 'success');
                 this.resetLiveProgress(data.status === 'queued' ? 'queued' : 'running');
+                this.updateDestinationPath();
                 this.clearInput();
                 this.isRunning = true;
                 await this.loadStatus();
@@ -371,7 +425,28 @@ class IAMirrorUI {
         }
     }
 
-    
+    async loadDestinationHint() {
+        try {
+            const response = await fetch('/api/config');
+            if (!response.ok) return;
+            const config = await response.json();
+            this.defaultDestination = config.destination || config.destdir || '/downloads';
+            this.updateDestinationPath();
+        } catch (error) {
+            console.error('Error loading destination config:', error);
+        }
+    }
+
+    async loadRecentDownloads() {
+        try {
+            const response = await fetch('/api/jobs/recent?days=7&limit=20');
+            if (!response.ok) return;
+            const data = await response.json();
+            this.renderRecentDownloads(data.jobs || []);
+        } catch (error) {
+            console.error('Error loading recent downloads:', error);
+        }
+    }
 
     // ============ UI Updates ============
 
@@ -392,6 +467,7 @@ class IAMirrorUI {
             }
         }
 
+        this.updateDestinationPath(data.active_job || null);
         this.updateAsciiConsole(data.queue_length || 0);
         this.updateUIState();
     }
@@ -436,6 +512,7 @@ class IAMirrorUI {
             this.currentJob = data;
             this.isRunning = true;
             this.liveProgress.status = 'running';
+            this.updateDestinationPath(this.currentJob);
         } else if (data.status === 'completed' || data.status === 'failed') {
             this.isRunning = false;
             const statusMsg = data.status === 'completed' ? 'Download completed!' : 'Download failed.';
@@ -452,6 +529,7 @@ class IAMirrorUI {
                 this.liveProgress.etaSeconds = 0;
             }
             this.updateAsciiConsole(this.queueLength);
+            this.loadRecentDownloads();
 
             this.sendNotification('Job Update', {
                 body: `The download has ${data.status}.`
@@ -600,6 +678,26 @@ class IAMirrorUI {
         return this.estimatedBytesDone() + this.estimatedRemainingBytes();
     }
 
+    updateDestinationPath(job = null) {
+        const destinationEl = document.getElementById('destination-path');
+        if (!destinationEl) return;
+
+        const root = (job?.config?.destdir || this.defaultDestination || '/downloads').replace(/\/+$/, '');
+        const inputIds = this.getIdentifiersFromInput();
+
+        let resolved = root || '/downloads';
+        if (job?.identifier) {
+            resolved = `${root}/${job.identifier}`;
+        } else if (inputIds.length > 0) {
+            resolved = `${root}/${inputIds[0]}`;
+            if (inputIds.length > 1) {
+                resolved += ` (+${inputIds.length - 1} more)`;
+            }
+        }
+
+        destinationEl.textContent = resolved;
+    }
+
     updateAsciiConsole(queueLength = 0) {
         const textEl = document.getElementById('ascii-progress-text');
         const percentEl = document.getElementById('ascii-progress-percent');
@@ -666,7 +764,43 @@ class IAMirrorUI {
         return '█'.repeat(filled) + '░'.repeat(Math.max(width - filled, 0));
     }
 
-    
+    renderRecentDownloads(jobs) {
+        const container = document.getElementById('recent-downloads');
+        const countEl = document.getElementById('recent-downloads-count');
+        if (!container) return;
+
+        if (countEl) countEl.textContent = `${jobs.length}`;
+
+        if (!jobs.length) {
+            container.innerHTML = '<div class="text-xs text-secondary p-2">No completed downloads in the last 7 days.</div>';
+            return;
+        }
+
+        const statusClass = {
+            completed: 'text-success',
+            failed: 'text-danger',
+            stopped: 'text-warning'
+        };
+
+        container.innerHTML = jobs.map((job) => {
+            const klass = statusClass[job.status] || 'text-secondary';
+            const sizeText = this.formatBytes(Number(job.bytes_total || 0));
+            const completed = job.completed_at ? new Date(job.completed_at.replace(' ', 'T') + 'Z').toLocaleString() : '—';
+            return `
+                <div class="recent-download-item">
+                    <div class="d-flex justify-content-between align-items-center gap-2">
+                        <div class="text-sm fw-semibold text-truncate">${this.escapeHtml(job.identifier || 'unknown')}</div>
+                        <div class="text-xs ${klass} fw-bold text-uppercase">${this.escapeHtml(job.status || 'unknown')}</div>
+                    </div>
+                    <div class="recent-download-path mt-1">${this.escapeHtml(job.resolved_path || '--')}</div>
+                    <div class="d-flex justify-content-between text-xs text-secondary mt-1">
+                        <span>${sizeText}</span>
+                        <span>${this.escapeHtml(completed)}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
 
     escapeHtml(value) {
         return String(value)

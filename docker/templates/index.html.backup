@@ -199,6 +199,26 @@
                 <div id="action-status" class="status-notice" aria-live="polite"></div>
             </section>
 
+            <section class="metrics-strip">
+                <div class="metrics-card">
+                    <div class="label-with-help">
+                        <div class="ui-label">Destination</div>
+                        <details class="help-pop">
+                            <summary aria-label="Help for destination">?</summary>
+                            <div class="help-popover">The folder shown here is the resolved container path for the next item in the queue.</div>
+                        </details>
+                    </div>
+                    <div id="destination-path" class="console-destination">/downloads</div>
+                </div>
+                <div class="metrics-card metrics-card-tight">
+                    <div class="panel-heading-row mb-2">
+                        <div class="ui-label">Progress</div>
+                        <span id="ascii-progress-percent" class="console-percent">0%</span>
+                    </div>
+                    <button type="button" class="btn btn-ghost btn-xs" id="view-log-btn">View Log</button>
+                </div>
+            </section>
+
             <section class="directory-panel console-panel homepage-panel">
                 <pre id="ascii-progress-text" class="ascii-console-text" role="status" aria-live="polite" aria-atomic="true">+------------------------------------------+
  IA-MIRROR PROGRESS
@@ -209,6 +229,16 @@
  DATA REMAIN    : --
  PROGRESS       : [░░░░░░░░░░░░░░░░░░░░] 0%
 +------------------------------------------+</pre>
+            </section>
+
+            <section class="directory-panel homepage-panel">
+                <div class="panel-heading-row mb-2">
+                    <div class="ui-label">Recent Downloads</div>
+                    <span id="recent-downloads-count" class="text-xs text-secondary">0</span>
+                </div>
+                <div id="recent-downloads" class="recent-downloads-list">
+                    <div class="text-xs text-secondary">No completed downloads in the last 7 days.</div>
+                </div>
             </section>
         </div>
     </main>
@@ -287,7 +317,27 @@
         </div>
     </div>
 
-    
+    <!-- Log Viewer Modal -->
+    <div class="modal fade" id="logModal" tabindex="-1" aria-hidden="true" aria-labelledby="log-modal-title" data-bs-theme="dark">
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content border-0" style="background-color: var(--color-surface);">
+                <div class="modal-header border-bottom border">
+                    <h5 class="modal-title fw-bold font-heading" id="log-modal-title">Job Log</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body p-0" style="background-color: rgba(0,0,0,0.2);">
+                    <pre class="m-0 p-4 font-monospace text-xs text-white-50" id="log-content"
+                        style="white-space: pre-wrap; word-break: break-all; min-height: 200px;"></pre>
+                </div>
+                <div class="modal-footer border-top border">
+                    <button type="button" class="btn btn-ghost text-secondary px-4" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary-modern px-4" id="refresh-log-btn">
+                        Refresh Logs
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Settings Modal -->
     <div class="modal fade" id="settingsModal" tabindex="-1" aria-hidden="true" aria-labelledby="settings-modal-title" data-bs-theme="dark">
