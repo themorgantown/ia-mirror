@@ -38,35 +38,55 @@ jobs:
       - name: Run Docker Scout
         id: scout
         run: |
+          image_ref="local://ia-mirror:scout"
+          vuln_report="scout-cves.md"
+          recommendations_report="scout-recommendations.txt"
+
           # Initialize report file
           echo "# Docker Scout Monthly Report" > scout-report.md
-          echo "Scan Date: $(date)" >> scout-report.md
+          echo "Scan Date: $(date -u)" >> scout-report.md
           echo "" >> scout-report.md
 
           # 1. Check for High/Critical Vulnerabilities
           # --exit-code returns non-zero if vulns are found
           echo "## 🚨 Vulnerabilities (High/Critical)" >> scout-report.md
-          
-          # We use '|| true' to prevent the step from failing immediately, 
-          # so we can capture the result and continue to recommendations.
-          if ! docker scout cves ia-mirror:scout \
+
+          if docker scout cves "$image_ref" \
             --only-severity high,critical \
             --exit-code \
-            --format markdown >> scout-report.md; then
-            echo "VULNS_FOUND=true" >> $GITHUB_ENV
-          else
+            --format markdown \
+            --output "$vuln_report"; then
             echo "No high or critical vulnerabilities found." >> scout-report.md
+            echo "vulns_found=false" >> "$GITHUB_OUTPUT"
+          else
+            scout_status=$?
+            if [ "$scout_status" -ne 2 ]; then
+              echo "Docker Scout CVE scan failed with exit code $scout_status" >&2
+              exit "$scout_status"
+            fi
+            cat "$vuln_report" >> scout-report.md
+            echo "vulns_found=true" >> "$GITHUB_OUTPUT"
           fi
 
           echo "" >> scout-report.md
-          
+
           # 2. Check for Base Image Recommendations
           echo "## 🐳 Base Image Recommendations" >> scout-report.md
-          docker scout recommendations ia-mirror:scout \
-            --format markdown >> scout-report.md || true
+          echo '```text' >> scout-report.md
+          if docker scout recommendations "$image_ref" > "$recommendations_report"; then
+            if [ -s "$recommendations_report" ]; then
+              cat "$recommendations_report" >> scout-report.md
+            else
+              echo "No base image recommendations." >> scout-report.md
+            fi
+          else
+            scout_status=$?
+            echo "Docker Scout recommendations failed with exit code $scout_status." >> scout-report.md
+          fi
+          echo '```' >> scout-report.md
 
       - name: Create GitHub Issue
-        if: env.VULNS_FOUND == 'true'
+        if: steps.scout.outputs.vulns_found == 'true'
         uses: peter-evans/create-issue-from-file@v5
         with:
           title: "Security Alert: High Vulnerabilities Detected in Docker Image"
