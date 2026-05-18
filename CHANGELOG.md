@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.2]
+## [1.0.3]
 
 # Webui! It mirrors, downloads, syncs and resumes! Run the docker-compose.yml and then visit: http://localhost:17865
 
