@@ -15,6 +15,7 @@ ENV PYTHONUNBUFFERED=1 \
     XDG_CONFIG_HOME=/home/app/.config
 
 # Install required system packages.
+# hadolint ignore=DL3018
 RUN apk upgrade --no-cache && \
     apk add --no-cache \
         bash \
