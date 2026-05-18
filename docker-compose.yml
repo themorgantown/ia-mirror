@@ -10,21 +10,25 @@ services:
       - ./downloads:/downloads  # Media files
       - ./data:/data            # Database/Metadata
     env_file:
-      - ./docker/example.env
+      # docker/example.env is a reference template only.
+      # Put real overrides in docker/live.env; it is ignored if missing.
       - path: ./docker/live.env
         required: false
-    environment:
-      # Required: Set your Internet Archive identifier (item or collection)
-      - IA_IDENTIFIER=example_item  # Replace 'example_item' with your actual IA identifier
-      # Dry run by default: Shows what would be downloaded without actually fetching
-      - IA_DRY_RUN=1  # Set to 0 or remove this line to perform a real download
-      # Optional: append your app name/version to the Internet Archive User-Agent (internetarchive >= 5.7.2)
-      - IA_USER_AGENT_SUFFIX=ia-archive-docker
-      # Optional: Add other environment variables as needed (see docker/example.env for full list)
-      # - IA_GLOB=*  # Default: download all files; set to restrict (e.g., *.zip)
-      # - IA_CONCURRENCY=5  # Parallel downloads
-      # - IA_CHECKSUM=1  # Enable checksum verification
-      # - WEB_ENABLED=true  # Enable the web UI (default true)
-      # - WEB_PORT=17865   # Change if you need a different host port
-    # The container will run with the above environment variables injected as CLI args
-    # For real downloads, edit IA_DRY_RUN above or override with: docker-compose run --rm ia-mirror env IA_DRY_RUN=0
+
+    # Runtime mode:
+    # - Web UI is the default. You do not need IA_IDENTIFIER to open the UI;
+    #   paste item IDs or archive.org/details/... URLs into the browser.
+    # - Blank/missing IA_IDENTIFIER is OK for Web UI mode.
+    # - Do not use IA_IDENTIFIER=example_item. It is placeholder text; real Web UI
+    #   jobs reject it, and CLI mode may try to download it as if it were real.
+    #
+    # For direct CLI mode, add these to docker/live.env or pass them with
+    # `docker compose run --rm -e ... ia-mirror`:
+    #   WEB_ENABLED=false
+    #   IA_IDENTIFIER=The_Babe_Ruth_Collection
+    #   IA_DRY_RUN=1
+    #
+    # Optional per-job defaults for the Web UI can also go in docker/live.env:
+    #   IA_DRY_RUN=1
+    #   IA_CONCURRENCY=5
+    #   IA_CHECKSUM=1

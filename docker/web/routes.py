@@ -332,7 +332,7 @@ def register_routes(app, storage, worker, socketio, watcher=None):
     @app.route('/api/jobs/recent', methods=['GET'])
     def get_recent_jobs():
         """Get recent completed downloads with resolved destination details."""
-        days = request.args.get('days', 7, type=int)
+        days = request.args.get('days', 30, type=int)
         limit = request.args.get('limit', 20, type=int)
         rows = storage.get_recent_downloads(days=days, limit=limit)
 

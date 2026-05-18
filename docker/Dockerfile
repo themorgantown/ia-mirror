@@ -1,7 +1,7 @@
 # Production image for ia-mirror
 ARG IA_PYPI_VERSION="5.8.0"
 ARG PROJECT_VERSION="1.0.2"
-FROM python:3.14.5-slim-trixie AS base
+FROM python:3.14.5-alpine3.23 AS base
 ARG IA_PYPI_VERSION
 ARG PROJECT_VERSION
 
@@ -14,21 +14,19 @@ ENV PYTHONUNBUFFERED=1 \
     HOME=/home/app \
     XDG_CONFIG_HOME=/home/app/.config
 
-# Install required system packages (curl for diagnostics if needed)
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        tini \
+# Install required system packages.
+RUN apk upgrade --no-cache && \
+    apk add --no-cache \
         bash \
-        gosu && \
-    apt-get install -y --no-install-recommends --only-upgrade openssl && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+        ca-certificates \
+        coreutils \
+        curl \
+        shadow \
+        su-exec \
+        tini
 
 # Add non-root user
-RUN useradd -u 1000 -m -d /home/app app
+RUN groupadd -g 1000 app && useradd -u 1000 -g app -m -d /home/app app
 WORKDIR /app
 
 # Copy and install Python dependencies
@@ -63,4 +61,4 @@ LABEL org.opencontainers.image.title="ia-mirror" \
     org.opencontainers.image.version="${PROJECT_VERSION}" \
     org.opencontainers.image.authors="Daniel Morgan"
 
-ENTRYPOINT ["/usr/bin/tini","--","/app/entrypoint.sh"]
+ENTRYPOINT ["/sbin/tini","--","/app/entrypoint.sh"]

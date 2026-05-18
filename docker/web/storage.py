@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from contextlib import contextmanager
 from typing import List, Dict, Optional
 
+_UNSET = object()
+
 
 class JobStorage:
     """SQLite storage for job queue and history."""
@@ -200,8 +202,8 @@ class JobStorage:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def get_recent_downloads(self, days: int = 7, limit: int = 25) -> List[Dict]:
-        """Get recent completed/failed downloads within the past N days."""
+    def get_recent_downloads(self, days: int = 30, limit: int = 25) -> List[Dict]:
+        """Get recent completed downloads within the past N days."""
         days = max(1, int(days))
         limit = max(1, int(limit))
         cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
@@ -210,7 +212,7 @@ class JobStorage:
             rows = conn.execute(
                 """
                 SELECT * FROM jobs
-                WHERE status NOT IN ('queued', 'running')
+                WHERE status = 'completed'
                   AND completed_at IS NOT NULL
                   AND completed_at >= ?
                 ORDER BY completed_at DESC
@@ -274,20 +276,20 @@ class JobStorage:
             row = conn.execute("SELECT * FROM worker_state WHERE id = 1").fetchone()
             return dict(row) if row else {}
     
-    def update_worker_state(self, active_job_id: int = None, active_pid: int = None,
-                           is_processing_queue: bool = None):
+    def update_worker_state(self, active_job_id=_UNSET, active_pid=_UNSET,
+                           is_processing_queue=_UNSET):
         """Update worker state."""
         with self._get_conn() as conn:
             updates = []
             values = []
             
-            if active_job_id is not None:
+            if active_job_id is not _UNSET:
                 updates.append("active_job_id = ?")
                 values.append(active_job_id)
-            if active_pid is not None:
+            if active_pid is not _UNSET:
                 updates.append("active_pid = ?")
                 values.append(active_pid)
-            if is_processing_queue is not None:
+            if is_processing_queue is not _UNSET:
                 updates.append("is_processing_queue = ?")
                 values.append(1 if is_processing_queue else 0)
             

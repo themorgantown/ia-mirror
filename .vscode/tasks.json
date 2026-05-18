@@ -335,6 +335,35 @@
 				"docker run --rm -i hadolint/hadolint hadolint --ignore DL3008 - < docker/Dockerfile"
 			],
 			"isBackground": false
+		},
+		{
+			"label": "Smoke test Alpine image",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"run",
+				"--rm",
+				"ia-mirror:local",
+				"--print-effective-config"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "Run integration tests",
+			"type": "shell",
+			"command": "./tests/runtests.sh",
+			"isBackground": false
+		},
+		{
+			"label": "Scout quickview local image",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"scout",
+				"quickview",
+				"local://ia-mirror:local"
+			],
+			"isBackground": false
 		}
 	]
 }

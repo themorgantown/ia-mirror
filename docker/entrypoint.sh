@@ -135,7 +135,7 @@ if [[ "$WEB_ENABLED" == "true" ]]; then
   mkdir -p "$DB_DIR"
   chown -R app:app "$DB_DIR"
   
-  exec gosu app gunicorn \
+    exec su-exec app gunicorn \
     --bind "${WEB_HOST}:${WEB_PORT}" \
     --worker-class gthread \
     --threads 4 \
@@ -146,5 +146,5 @@ if [[ "$WEB_ENABLED" == "true" ]]; then
     "web.app:app"
 else
   # Run CLI fetcher.py (tini is PID 1 and will forward signals)
-  exec gosu app /usr/local/bin/python /app/fetcher.py "$@"
+    exec su-exec app /usr/local/bin/python /app/fetcher.py "$@"
 fi

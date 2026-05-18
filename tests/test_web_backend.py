@@ -117,10 +117,34 @@ class TestJobStorage:
         assert state["active_job_id"] == 1
         assert state["is_processing_queue"] == 1
 
+        storage.update_worker_state(active_job_id=None, active_pid=None)
+        state = storage.get_worker_state()
+        assert state["active_job_id"] is None
+        assert state["active_pid"] is None
+        assert state["is_processing_queue"] == 1
+
     def test_ui_config(self, storage):
         storage.set_config("theme", "dark")
         assert storage.get_config("theme") == "dark"
         assert storage.get_all_config()["theme"] == "dark"
+
+    def test_recent_downloads_only_returns_completed_jobs(self, storage):
+        completed_id = storage.add_job("done-item", "done-item", "download", {"destdir": "/downloads"})
+        failed_id = storage.add_job("failed-item", "failed-item", "download", {"destdir": "/downloads"})
+        old_id = storage.add_job("old-item", "old-item", "download", {"destdir": "/downloads"})
+
+        storage.update_job_status(completed_id, "completed")
+        storage.update_job_status(failed_id, "failed")
+        storage.update_job_status(old_id, "completed")
+
+        with storage._get_conn() as conn:
+            conn.execute(
+                "UPDATE jobs SET completed_at = datetime('now', '-31 days') WHERE id = ?",
+                (old_id,),
+            )
+
+        rows = storage.get_recent_downloads(days=30, limit=10)
+        assert [row["identifier"] for row in rows] == ["done-item"]
 
 
 class TestJobRunner:
@@ -325,6 +349,23 @@ def test_get_jobs(client, storage):
     response = client.get("/api/jobs")
     assert response.status_code == 200
     assert len(response.json["jobs"]) >= 1
+
+
+def test_get_recent_jobs_uses_30_day_completed_window(client, storage):
+    completed_id = storage.add_job("recent-item", "recent-item", "download", {"destdir": "/downloads"})
+    failed_id = storage.add_job("failed-item", "failed-item", "download", {"destdir": "/downloads"})
+
+    storage.update_job_status(completed_id, "completed")
+    storage.update_job_progress(completed_id, {"bytes_total": 2048})
+    storage.update_job_status(failed_id, "failed")
+
+    response = client.get("/api/jobs/recent")
+
+    assert response.status_code == 200
+    assert response.json["days"] == 30
+    assert [job["identifier"] for job in response.json["jobs"]] == ["recent-item"]
+    assert response.json["jobs"][0]["resolved_path"] == "/downloads/recent-item"
+    assert response.json["jobs"][0]["bytes_total"] == 2048
 
 
 def test_get_job_by_id(client, storage):

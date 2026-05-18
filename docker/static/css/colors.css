@@ -7,8 +7,8 @@
   --color-border: #333333;    /* dark gray */
 
   /* Text Colors */
-  --color-text-main: #E0E0E0; /* off-white, easy on eyes */
-  --color-text-muted: #AAAAAA; /* muted text */
+  --color-text-main: #F1F1F1; /* off-white, easy on eyes */
+  --color-text-muted: #C4C4C4; /* muted text */
   --color-text-inverse: #0A0A0A; /* for text on light backgrounds */
 
   /* Links */
@@ -52,6 +52,6 @@
   --bs-light: #1A1A1A;
   --bs-dark: #0A0A0A;
   --bs-body-bg: #0A0A0A;
-  --bs-body-color: #E0E0E0;
+  --bs-body-color: #F1F1F1;
   --bs-border-color: #333333;
 }

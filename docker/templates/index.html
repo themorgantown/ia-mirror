@@ -8,9 +8,9 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
     <!-- Critical CSS inlined for faster first paint -->
     <style>
-        body { margin: 0; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+        body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: dark; }
         .container-xl { max-width: 1480px; margin: 0 auto; padding: 0 1rem; }
-        .font-heading { font-family: Georgia, "Times New Roman", Times, serif; font-weight: 700; }
+        .font-heading { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-weight: 700; }
         .font-monospace { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
         .text-xs { font-size: 0.75rem; }
         .text-sm { font-size: 0.875rem; }
@@ -209,6 +209,22 @@
  DATA REMAIN    : --
  PROGRESS       : [░░░░░░░░░░░░░░░░░░░░] 0%
 +------------------------------------------+</pre>
+            </section>
+
+            <section class="directory-panel homepage-panel recent-downloads-panel" aria-labelledby="recent-downloads-title">
+                <div class="panel-heading-row mb-2">
+                    <div class="label-with-help">
+                        <h3 id="recent-downloads-title" class="ui-label">Recent Downloads</h3>
+                        <details class="help-pop">
+                            <summary aria-label="Help for recent downloads">?</summary>
+                            <div class="help-popover">Completed jobs from the last 30 days, with the resolved item path under the download destination.</div>
+                        </details>
+                    </div>
+                    <span id="recent-downloads-count" class="text-xs fw-medium text-secondary">0</span>
+                </div>
+                <div id="recent-downloads" class="recent-downloads-list" aria-live="polite">
+                    <div class="recent-download-empty">No completed downloads in the last 30 days.</div>
+                </div>
             </section>
         </div>
     </main>

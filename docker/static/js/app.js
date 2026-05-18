@@ -31,6 +31,7 @@ class IAMirrorUI {
         
         // Defer non-critical initial data loads to after first paint
         requestAnimationFrame(() => {
+            this.loadRecentDownloads();
             this.loadStatus();
             this.updateAsciiConsole(this.queueLength);
         });
@@ -312,7 +313,7 @@ class IAMirrorUI {
                 this.setActionStatus(`${statusPrefix} ${data.valid_count} job(s)${extra}`, 'success');
                 this.resetLiveProgress(data.status === 'queued' ? 'queued' : 'running');
                 this.clearInput();
-                this.isRunning = true;
+                this.isRunning = data.status === 'running';
                 await this.loadStatus();
                 this.updateUIState();
             } else {
@@ -350,6 +351,7 @@ class IAMirrorUI {
 
             if (response.ok) {
                 this.isRunning = false;
+                await this.loadStatus();
                 this.setActionStatus('Download stopped.', 'warning');
                 this.updateUIState();
             } else {
@@ -371,12 +373,25 @@ class IAMirrorUI {
         }
     }
 
-    
+    async loadRecentDownloads() {
+        try {
+            const response = await fetch('/api/jobs/recent?days=30&limit=30');
+            if (!response.ok) return;
+            const data = await response.json();
+            this.renderRecentDownloads(data.jobs || []);
+        } catch (error) {
+            console.error('Error loading recent downloads:', error);
+        }
+    }
+
+    isDownloadOngoing() {
+        return Boolean(this.currentJob && this.currentJob.status === 'running');
+    }
 
     // ============ UI Updates ============
 
     updateUI(data) {
-        if (data.active_job) {
+        if (data.active_job && data.active_job.status === 'running') {
             this.currentJob = data.active_job;
             this.isRunning = true;
             this.liveProgress.status = 'running';
@@ -409,8 +424,9 @@ class IAMirrorUI {
     updateUIState() {
         const startBtn = document.getElementById('start-download-btn');
         const stopBtn = document.getElementById('stop-job-btn');
+        const isOngoing = this.isDownloadOngoing();
 
-        if (this.isRunning || (this.currentJob && this.currentJob.status === 'running')) {
+        if (isOngoing) {
             if (startBtn) {
                 startBtn.style.display = 'inline-block';
                 startBtn.disabled = false;
@@ -452,6 +468,7 @@ class IAMirrorUI {
                 this.liveProgress.etaSeconds = 0;
             }
             this.updateAsciiConsole(this.queueLength);
+            this.loadRecentDownloads();
 
             this.sendNotification('Job Update', {
                 body: `The download has ${data.status}.`
@@ -603,7 +620,7 @@ class IAMirrorUI {
     updateAsciiConsole(queueLength = 0) {
         const textEl = document.getElementById('ascii-progress-text');
         const percentEl = document.getElementById('ascii-progress-percent');
-        if (!textEl || !percentEl) return;
+        if (!textEl) return;
 
         const status = this.isRunning
             ? (this.liveProgress.status === 'idle' ? 'running' : this.liveProgress.status)
@@ -657,13 +674,43 @@ class IAMirrorUI {
 
         textEl.textContent = lines.join('\n');
 
-        percentEl.textContent = `${percent}%`;
+        if (percentEl) percentEl.textContent = `${percent}%`;
     }
 
     buildAsciiBar(percent, width = 20) {
         const clamped = Math.max(0, Math.min(100, percent));
         const filled = Math.round((clamped / 100) * width);
         return '█'.repeat(filled) + '░'.repeat(Math.max(width - filled, 0));
+    }
+
+    renderRecentDownloads(jobs) {
+        const container = document.getElementById('recent-downloads');
+        const countEl = document.getElementById('recent-downloads-count');
+        if (!container) return;
+
+        if (countEl) countEl.textContent = String(jobs.length);
+
+        if (!jobs.length) {
+            container.innerHTML = '<div class="recent-download-empty">No completed downloads in the last 30 days.</div>';
+            return;
+        }
+
+        container.innerHTML = jobs.map((job) => {
+            const sizeText = this.formatBytes(Number(job.bytes_total || 0));
+            const completed = job.completed_at
+                ? new Date(job.completed_at.replace(' ', 'T') + 'Z').toLocaleString()
+                : '--';
+            return `
+                <article class="recent-download-item">
+                    <div class="recent-download-main">
+                        <div class="recent-download-name">${this.escapeHtml(job.identifier || 'unknown')}</div>
+                        <div class="recent-download-size">${this.escapeHtml(sizeText)}</div>
+                    </div>
+                    <div class="recent-download-path">${this.escapeHtml(job.resolved_path || '--')}</div>
+                    <div class="recent-download-meta">${this.escapeHtml(completed)}</div>
+                </article>
+            `;
+        }).join('');
     }
 
     

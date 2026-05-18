@@ -20,8 +20,8 @@ The container starts in Web UI mode by default.
 
 | Mode | How it starts | Primary use |
 |------|---------------|-------------|
-| Web UI | `WEB_ENABLED=true` or unset | Queue jobs, manage history, run downloads through the browser |
-| CLI | `WEB_ENABLED=false` | Direct one-shot downloads or scripted runs |
+| Web UI | `WEB_ENABLED=true` or unset | Queue jobs, manage history, run downloads through the browser; no `IA_IDENTIFIER` is needed at startup |
+| CLI | `WEB_ENABLED=false` | Direct one-shot downloads or scripted runs; requires `IA_IDENTIFIER` or a CLI identifier argument |
 
 ## Quick Start
 
@@ -92,13 +92,16 @@ When `IA_DESTDIR=/downloads`, downloaded files land in `/downloads/<identifier>/
 
 ## Docker Compose
 
-`docker-compose.yml` is intended for local Web UI development and defaults to dry-run behavior.
+`docker-compose.yml` is intended for local Web UI use. It starts the browser UI by default and does not require an `IA_IDENTIFIER`; enter item IDs or `archive.org/details/...` URLs in the UI.
 
-1. Copy the template: `cp docker/example.env docker/live.env`
-2. Edit `docker/live.env` with your credentials and settings
-3. Replace `example_item` in `docker-compose.yml` if needed
-4. Start the stack: `docker compose up -d`
-5. Open http://localhost:17865
+1. Start the stack: `docker compose up -d`
+2. Open http://localhost:17865
+3. Optional: copy the template with `cp docker/example.env docker/live.env`
+4. Optional: edit `docker/live.env` with credentials, Web UI defaults, or CLI-mode settings
+
+For CLI mode through Compose, set `WEB_ENABLED=false` and a real `IA_IDENTIFIER` in `docker/live.env`, or pass them with `docker compose run --rm -e WEB_ENABLED=false -e IA_IDENTIFIER=The_Babe_Ruth_Collection ia-mirror`.
+
+Do not use `IA_IDENTIFIER=example_item`; it is placeholder text. Blank or missing `IA_IDENTIFIER` is fine for Web UI mode, but CLI mode exits with `identifier required`.
 
 If you already configured `ia` on your host, mount it into the service:
 
@@ -252,7 +255,7 @@ See [docker/example.env](docker/example.env) for the full template.
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `IA_IDENTIFIER` | none | Required unless provided as a CLI arg |
+| `IA_IDENTIFIER` | none | Not needed for Web UI startup; required in CLI mode unless provided as a CLI arg |
 | `IA_DESTDIR` | `/downloads` | Root destination directory |
 | `IA_CONCURRENCY` | `5` | Parallel workers |
 | `IA_DRY_RUN` | `false` | Simulate downloads |
