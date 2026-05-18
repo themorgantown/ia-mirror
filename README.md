@@ -2,6 +2,28 @@
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/themorgantown/ia-mirror)](https://hub.docker.com/r/themorgantown/ia-mirror)
 
+## What ia-mirror Adds Beyond `internetarchive`
+
+Upstream [`jjjake/internetarchive`](https://github.com/jjjake/internetarchive) provides the `ia` CLI and Python API for Archive.org operations such as download, upload, search, metadata edits, listing, copy/move/delete, reviews, tasks, and account/configuration commands. `ia-mirror` keeps `internetarchive` as its core dependency, then adds the mirroring appliance features below.
+
+| Feature in ia-mirror | Upstream `internetarchive` status | What this project adds |
+|----------------------|-----------------------------------|------------------------|
+| Persistent Web UI | Not native; upstream is CLI/Python API focused | Browser queue manager, global settings, job history, file browser, log viewer, and WebSocket progress |
+| Docker-first appliance | Not native; upstream supports `pip`, `pipx`, source installs, and a standalone binary | Production container with Gunicorn Web UI, healthcheck, non-root runtime, Compose/Unraid-oriented defaults, and mounted `/downloads` + `/data` state |
+| SQLite job queue and history | Not native | Durable queued/running/completed job state, reorder/delete controls, and automatic queue resume after restart |
+| Per-item mirror reports | Not native | `report.json`, `.ia_status/<identifier>.json`, lock files, and status snapshots beside each downloaded item |
+| Built-in parallel mirror workers | Upstream recommends composing with tools such as GNU Parallel for multi-item concurrency | `-j`/`IA_CONCURRENCY` worker pool inside the wrapper with aggregate progress and ETA |
+| Collection watcher | Not native | Background service that watches collections and queues new/future items |
+| Browser/API batch input | Partially covered by upstream `--itemlist` and `--search` | Paste identifiers or archive.org URLs into the UI/API and normalize them into queued jobs with shared settings |
+| CSV source-to-destination batch mode | Not native for downloads | Batch CSV mode that maps each source identifier to its own destination path and wrapper settings |
+| Verify-only mirror checks | Not native as a standalone download workflow | Check existing local files without downloading, with `exists`, `size`, or `checksum` verification modes |
+| Local sync cleanup | Not native for local mirrors | `--sync` removes local files that are no longer present in the remote IA item manifest |
+| Estimate and cost reporting | Not native | `--estimate-only`, dry-run reports, assumed bandwidth, and optional cost-per-GB calculations |
+| Bandwidth cap and aggregate speed sampling | Not native | Approximate `--max-mbps` throttling plus sampled aggregate transfer speed/ETA |
+| Polite global backoff controls | Partially covered by upstream retry/timeout flags | Wrapper-level exponential backoff for HTTP 429/5xx responses with configurable base/max/multiplier/jitter |
+| Container-friendly env configuration | Upstream has config files and its own credential/env conventions | `IA_*` and `WEB_*` env-to-argument injection, `--print-effective-config`, and automatic `ia.ini` creation from `IA_ACCESS_KEY`/`IA_SECRET_KEY` |
+| ZIP folder resume helper | Not native | `--resumefolders` skips ZIP downloads when the expected extracted folder already exists |
+
 ia-mirror is a Docker-first Internet Archive mirroring utility. It wraps the `internetarchive` Python package and `ia` CLI with resumable downloads, batch queuing, structured reports, metadata caching, bandwidth throttling, and a persistent Web UI.
 
 Use reasonable concurrency, keep polite backoff enabled, and avoid unnecessary repeated metadata fetches. If you rely on Internet Archive heavily, consider donating at https://archive.org/donate/.
