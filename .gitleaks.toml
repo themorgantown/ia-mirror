@@ -1,0 +1,23 @@
+title = "ia-mirror gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "ia-credentials"
+description = "Internet Archive API credentials"
+regex = '''(IA_ACCESS_KEY|IA_SECRET_KEY)\s*=\s*[A-Za-z0-9]{10,}'''
+severity = "CRITICAL"
+tags = ["internet-archive", "credentials"]
+[rules.allowlist]
+regexes = [
+  '''your_access_key_here''',
+  '''your_secret_key_here''',
+  '''GsNNXy5vEF9ggNlR''',
+]
+
+[allowlist]
+paths = [
+  '''docker/example\.env''',
+  '''docker/live\.env''',
+]

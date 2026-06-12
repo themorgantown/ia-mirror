@@ -73,10 +73,12 @@ def register_routes(app, storage, worker, socketio, watcher=None):
     
     # ============ Configuration ============
     
+    _REDACTED_CONFIG_KEYS = frozenset({'ia_access_key', 'ia_secret_key'})
+
     @app.route('/api/config', methods=['GET'])
     def get_config():
         """Get current configuration."""
-        config = storage.get_all_config()
+        config = {k: v for k, v in storage.get_all_config().items() if k not in _REDACTED_CONFIG_KEYS}
         defaults = {
             'destination': os.getenv('IA_DESTDIR', '/downloads'),
             'operation': 'download',

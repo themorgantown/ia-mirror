@@ -120,10 +120,24 @@ def create_app(config=None):
     app.worker = worker
     app.watcher = watcher
     
+    @app.after_request
+    def add_security_headers(response):
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: https://archive.org https://*.us.archive.org; "
+            "connect-src 'self' ws: wss:"
+        )
+        return response
+
     # Register blueprints and routes
     from . import routes
     routes.register_routes(app, storage, worker, socketio, watcher)
-    
+
     return app, socketio
 
 

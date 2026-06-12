@@ -121,7 +121,7 @@ WEB_ENABLED=${WEB_ENABLED:-true}
 
 if [[ "$WEB_ENABLED" == "true" ]]; then
   # Start web UI with Gunicorn (threaded worker for SocketIO)
-  WEB_HOST=${WEB_HOST:-0.0.0.0}
+  WEB_HOST=${WEB_HOST:-127.0.0.1}
   WEB_PORT=${WEB_PORT:-17865}
   WEB_DB_PATH=${WEB_DB_PATH:-/data/ui.db}
   WEB_RUNNER=${WEB_RUNNER:-real}
