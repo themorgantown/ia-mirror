@@ -73,6 +73,7 @@ class IAMirrorUI {
         document.getElementById('settings-btn')?.addEventListener('click', () => this.openSettings());
         document.getElementById('save-settings-btn')?.addEventListener('click', () => this.saveSettings());
         document.getElementById('clear-history-btn')?.addEventListener('click', () => this.clearHistory());
+        this.setupCopyEnvBtn();
     }
 
     setupSocketListeners() {
@@ -174,11 +175,32 @@ class IAMirrorUI {
 
     async openSettings() {
         const modal = new bootstrap.Modal(document.getElementById('settingsModal'));
-        
+
         try {
             const response = await fetch('/api/config');
             if (response.ok) {
                 const config = await response.json();
+
+                // Download location
+                const liveDir = config.host_download_dir || './downloads';
+                const currentEl = document.getElementById('settings-current-download-dir');
+                if (currentEl) currentEl.textContent = liveDir;
+                const dirInput = document.getElementById('settings-download-dir');
+                if (dirInput) {
+                    dirInput.value = '';
+                    // Platform-specific placeholder
+                    const ua = navigator.userAgent || '';
+                    if (ua.includes('Windows')) {
+                        dirInput.placeholder = 'C:/Users/yourname/Downloads';
+                    } else if (ua.includes('Mac')) {
+                        dirInput.placeholder = '/Users/yourname/Downloads';
+                    } else {
+                        dirInput.placeholder = '/home/yourname/Downloads';
+                    }
+                }
+                const notice = document.getElementById('settings-download-dir-notice');
+                if (notice) notice.style.display = 'none';
+
                 document.getElementById('settings-access-key').value = config.ia_access_key || '';
                 document.getElementById('settings-secret-key').value = config.ia_secret_key || '';
                 document.getElementById('settings-concurrency').value = config.concurrency || 4;
@@ -195,11 +217,12 @@ class IAMirrorUI {
         } catch (e) {
             console.error('Failed to load config:', e);
         }
-        
+
         modal.show();
     }
 
     async saveSettings() {
+        const desiredDir = (document.getElementById('settings-download-dir')?.value || '').trim();
         const config = {
             ia_access_key: document.getElementById('settings-access-key').value,
             ia_secret_key: document.getElementById('settings-secret-key').value,
@@ -214,6 +237,7 @@ class IAMirrorUI {
             no_lock: document.getElementById('settings-no-lock').checked,
             no_backoff: document.getElementById('settings-no-backoff').checked
         };
+        if (desiredDir) config.host_download_dir = desiredDir;
 
         try {
             const response = await fetch('/api/config', {
@@ -223,10 +247,20 @@ class IAMirrorUI {
             });
 
             if (response.ok) {
-                const modalEl = document.getElementById('settingsModal');
-                const modal = bootstrap.Modal.getInstance(modalEl);
-                modal.hide();
-                this.setActionStatus('Global settings saved.', 'success');
+                if (desiredDir) {
+                    // Show restart-required notice instead of closing the modal
+                    const snippet = `DOWNLOAD_DIR=${desiredDir}`;
+                    const snippetEl = document.getElementById('settings-env-snippet');
+                    if (snippetEl) snippetEl.textContent = snippet;
+                    const notice = document.getElementById('settings-download-dir-notice');
+                    if (notice) notice.style.display = 'block';
+                    this.setActionStatus('Settings saved. Restart required to change download location.', 'warning');
+                } else {
+                    const modalEl = document.getElementById('settingsModal');
+                    const modal = bootstrap.Modal.getInstance(modalEl);
+                    modal.hide();
+                    this.setActionStatus('Global settings saved.', 'success');
+                }
             } else {
                 this.setActionStatus('Failed to save settings.', 'danger');
             }
@@ -234,6 +268,29 @@ class IAMirrorUI {
             console.error('Save failed:', e);
             this.setActionStatus('Error saving settings.', 'danger');
         }
+    }
+
+    setupCopyEnvBtn() {
+        document.getElementById('settings-copy-env-btn')?.addEventListener('click', () => {
+            const snippet = document.getElementById('settings-env-snippet')?.textContent || '';
+            if (!snippet) return;
+            navigator.clipboard.writeText(snippet).then(() => {
+                const btn = document.getElementById('settings-copy-env-btn');
+                if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 2000); }
+            }).catch(() => {
+                // Fallback for older browsers
+                const ta = document.createElement('textarea');
+                ta.value = snippet;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                const btn = document.getElementById('settings-copy-env-btn');
+                if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 2000); }
+            });
+        });
     }
 
     async clearHistory() {

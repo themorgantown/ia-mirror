@@ -27,6 +27,7 @@ run.log
 # python cache
 __pycache__/
 live.env
+.env
 data/*
 downloads/
 test_results.txt

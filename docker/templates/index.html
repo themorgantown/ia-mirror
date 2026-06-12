@@ -315,6 +315,30 @@
                 </div>
                 <form class="modal-body p-4" autocomplete="off">
                     <div class="mb-4">
+                        <label class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-3">Download Location</label>
+                        <div class="mb-2">
+                            <label class="form-label text-xs text-secondary mb-1">Current location (host path)</label>
+                            <div id="settings-current-download-dir" class="form-control form-control-modern text-secondary" style="background:var(--color-surface-raised,#f5f5f5);cursor:default;font-family:monospace;font-size:0.82rem;">loading...</div>
+                        </div>
+                        <div class="mb-2">
+                            <label for="settings-download-dir" class="form-label text-xs text-secondary mb-1">Change location (takes effect after restart)</label>
+                            <input type="text" class="form-control form-control-modern font-monospace" id="settings-download-dir"
+                                placeholder="/Users/yourname/Downloads"
+                                autocomplete="off" spellcheck="false">
+                            <div class="form-text text-xs text-secondary mt-1">Use a full absolute path — tilde (~) is not supported.</div>
+                        </div>
+                        <div id="settings-download-dir-notice" class="p-3 border rounded mt-2" style="display:none;background:var(--color-surface-raised,#f5f5f5);font-size:0.82rem;">
+                            <div class="fw-bold mb-1">Restart required to apply</div>
+                            <div class="mb-2 text-secondary">Add this line to your <code>.env</code> file (same folder as <code>docker-compose.yml</code>):</div>
+                            <div class="d-flex align-items-center gap-2">
+                                <code id="settings-env-snippet" class="flex-grow-1 px-2 py-1 rounded" style="background:#e8e8e8;word-break:break-all;"></code>
+                                <button type="button" class="btn btn-sm btn-ghost" id="settings-copy-env-btn" style="white-space:nowrap;">Copy</button>
+                            </div>
+                            <div class="mt-2 text-secondary">Then run: <code>docker compose down &amp;&amp; docker compose up -d</code></div>
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
                         <label class="form-label text-xs fw-bold text-uppercase tracking-wider text-secondary mb-3">Authentication</label>
                         <div class="p-3 mb-3 border border" style="background-color: var(--color-surface);">
                             <div class="text-xs fw-bold text-uppercase tracking-wider text-secondary mb-2">Preferred Method</div>

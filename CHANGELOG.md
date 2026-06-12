@@ -1,12 +1,44 @@
 # Changelog
 
+## [1.1.0] - 2026-06-12
+
+### Security
+- Default `WEB_HOST` to `127.0.0.1` instead of `0.0.0.0` in `entrypoint.sh` — prevents accidental network exposure when running without a reverse proxy
+- Redact `ia_access_key` and `ia_secret_key` from `GET /api/config` responses — credentials no longer leak through the status API
+- Pin all GitHub Actions workflows to exact commit SHAs — hardens supply chain against tag-mutable third-party actions
+- Add `CODEOWNERS` file requiring review on all workflow file changes
+- Add HTTP security headers to every response: `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`
+- Add `.gitleaks.toml` with IA credential scanning rules to catch accidental secret commits
+
+### Features
+- **Job log persistence**: Store up to 500 log lines per job in a new `job_logs` SQLite table — clients that refresh mid-job or reconnect can retrieve buffered output instead of missing it
+- **New endpoint** `GET /api/jobs/<id>/logs` — returns buffered log lines for any job, live or completed
+- **Orphaned job recovery**: On worker startup, reset any jobs stuck in `running` state to `failed` with message "Interrupted: worker restarted" — prevents silently blocked queues after crashes or container restarts
+- **Per-file retry with exponential backoff**: `download_single_file` retries failed downloads up to `IA_DOWNLOAD_RETRIES` times (default 3), with delay doubling from `IA_RETRY_BACKOFF_BASE` seconds (default 5s); respects shutdown signal during sleep
+- **CORS support**: Web API now accepts cross-origin requests via `Flask-CORS`
+- Improved path validation across file browser API endpoints
+
+### UI
+- Switch from dark terminal aesthetic to a clean light theme throughout the web UI
+- Fix operation dropdown visibility — was invisible against the dark custom background; now uses standard browser `<select>` appearance with visible arrow
+- All form controls (inputs, selects, buttons) use standard browser styling: white background, gray border, blue focus ring
+- Buttons use 4px border-radius with proper solid and ghost variants
+- Terminal and progress output areas intentionally retain dark styling for readability
+- Remove `data-bs-theme=dark` from modals
+- Update brand kicker text
+
+### Documentation
+- Expand README with a detailed feature comparison between ia-mirror and the base `internetarchive` library
+- Add new environment variable examples to `example.env` (`IA_DOWNLOAD_RETRIES`, `IA_RETRY_BACKOFF_BASE`)
+
+### CI/CD
+- Pin `docker-scout-monitor.yml`, `release-buildx.yml`, `sync-readme-to-dockerhub.yml`, and `ci.yml` workflow actions to immutable commit SHAs
+
+---
+
 ## [1.0.3]
 
-# Webui! It mirrors, downloads, syncs and resumes! Run the docker-compose.yml and then visit: http://localhost:17865
-
-Webui features: 
-
-## [Unreleased]
+Webui! It mirrors, downloads, syncs and resumes. Run `docker-compose.yml` and visit http://localhost:17865
 
 ## [0.4.0] - 2025-12-19
 

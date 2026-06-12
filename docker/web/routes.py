@@ -80,6 +80,7 @@ def register_routes(app, storage, worker, socketio, watcher=None):
         """Get current configuration."""
         config = {k: v for k, v in storage.get_all_config().items() if k not in _REDACTED_CONFIG_KEYS}
         defaults = {
+            'host_download_dir': os.getenv('DOWNLOAD_DIR', ''),
             'destination': os.getenv('IA_DESTDIR', '/downloads'),
             'operation': 'download',
             'verify_checksums': os.getenv('IA_CHECKSUM') == '1' or os.getenv('IA_VERIFY_MODE') == 'checksum',
@@ -105,6 +106,8 @@ def register_routes(app, storage, worker, socketio, watcher=None):
             'no_backoff': False,
         }
         defaults.update(config)
+        # host_download_dir is always the live env var (not SQLite) — SQLite stores desired-next value only
+        defaults['host_download_dir'] = os.getenv('DOWNLOAD_DIR', '')
         return jsonify(defaults)
     
     @app.route('/api/config', methods=['POST'])

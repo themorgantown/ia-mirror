@@ -7,8 +7,10 @@ services:
     ports:
       - "17865:17865"  # Web UI (http://localhost:17865)
     volumes:
-      - ./downloads:/downloads  # Media files
-      - ./data:/data            # Database/Metadata
+      - ${DOWNLOAD_DIR:-./downloads}:/downloads  # Media files — set DOWNLOAD_DIR in .env to change host path
+      - ${DATA_DIR:-./data}:/data                # Database/Metadata
+    environment:
+      - DOWNLOAD_DIR=${DOWNLOAD_DIR:-./downloads}
     env_file:
       # docker/example.env is a reference template only.
       # Put real overrides in docker/live.env; it is ignored if missing.

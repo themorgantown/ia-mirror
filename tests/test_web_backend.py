@@ -428,6 +428,42 @@ def test_post_config(client, storage):
     assert storage.get_config("concurrency") == "8"
 
 
+def test_get_config_includes_host_download_dir_from_env(client, monkeypatch):
+    """DOWNLOAD_DIR env var is returned as host_download_dir in GET /api/config."""
+    monkeypatch.setenv("DOWNLOAD_DIR", "/some/host/path")
+    response = client.get("/api/config")
+    assert response.status_code == 200
+    assert response.json["host_download_dir"] == "/some/host/path"
+
+
+def test_get_config_host_download_dir_defaults_to_empty(client, monkeypatch):
+    """Missing DOWNLOAD_DIR returns empty string, not a KeyError."""
+    monkeypatch.delenv("DOWNLOAD_DIR", raising=False)
+    response = client.get("/api/config")
+    assert response.status_code == 200
+    assert "host_download_dir" in response.json
+    assert response.json["host_download_dir"] == ""
+
+
+def test_post_host_download_dir_stores_in_sqlite(client, storage):
+    """POSTing host_download_dir saves to config storage."""
+    response = client.post("/api/config", json={"host_download_dir": "/desired/path"})
+    assert response.status_code == 200
+    assert storage.get_config("host_download_dir") == "/desired/path"
+
+
+def test_get_config_host_download_dir_env_takes_precedence(client, monkeypatch):
+    """GET /api/config always returns env var value for host_download_dir, not SQLite."""
+    # Save a different desired path to SQLite
+    client.post("/api/config", json={"host_download_dir": "/sqlite/path"})
+    # Set a different value in the env
+    monkeypatch.setenv("DOWNLOAD_DIR", "/env/path")
+    response = client.get("/api/config")
+    assert response.status_code == 200
+    # Env var must win — SQLite stores desired-next-path, env var is live mount
+    assert response.json["host_download_dir"] == "/env/path"
+
+
 def test_get_status(client):
     response = client.get("/api/status")
     assert response.status_code == 200
