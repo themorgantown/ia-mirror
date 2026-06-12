@@ -428,7 +428,17 @@ def register_routes(app, storage, worker, socketio, watcher=None):
                 return jsonify({'error': str(e)}), 500
         
         return send_file(log_path, as_attachment=True, download_name=f"{job['identifier']}.log")
-    
+
+    @app.route('/api/jobs/<int:job_id>/logs', methods=['GET'])
+    def get_job_logs(job_id):
+        """Get persisted log lines for a job."""
+        job = storage.get_job(job_id)
+        if not job:
+            return jsonify({'error': 'Job not found'}), 404
+
+        logs = storage.get_job_logs(job_id)
+        return jsonify({'logs': logs})
+
     # ============ Queue Management ============
     
     @app.route('/api/queue/add', methods=['POST'])

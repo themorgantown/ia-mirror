@@ -114,6 +114,15 @@ class JobStorage:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS job_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    line TEXT NOT NULL,
+                    ts REAL NOT NULL
+                )
+            """)
             
             # Initialize worker state if empty (idle by default)
             conn.execute("INSERT OR IGNORE INTO worker_state (id, is_processing_queue) VALUES (1, 0)")
@@ -394,6 +403,41 @@ class JobStorage:
                 WHERE status = 'running'
                 """
             )
+
+    def append_job_log(self, job_id, line: str):
+        """Append a log line for a job and prune to the last 500 rows."""
+        import time as _time
+        ts = _time.time()
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO job_logs (job_id, line, ts) VALUES (?, ?, ?)",
+                (str(job_id), line, ts)
+            )
+            conn.execute(
+                """
+                DELETE FROM job_logs
+                WHERE job_id = ?
+                  AND id < (
+                      SELECT MIN(id) FROM (
+                          SELECT id FROM job_logs
+                          WHERE job_id = ?
+                          ORDER BY id DESC
+                          LIMIT 500
+                      )
+                  )
+                """,
+                (str(job_id), str(job_id))
+            )
+
+    def get_job_logs(self, job_id) -> List[Dict]:
+        """Return log lines for a job, ordered oldest-first."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT line, ts FROM job_logs WHERE job_id = ? ORDER BY ts ASC",
+                (str(job_id),)
+            ).fetchall()
+            return [{"line": row["line"], "ts": row["ts"]} for row in rows]
+
 
     def reset_stuck_jobs(self):
         """Reset any jobs that were left running when the server stopped."""

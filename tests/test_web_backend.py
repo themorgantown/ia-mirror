@@ -145,6 +145,29 @@ class TestJobStorage:
         assert storage.get_config("theme") == "dark"
         assert storage.get_all_config()["theme"] == "dark"
 
+    def test_append_and_retrieve_job_logs(self, storage):
+        job_id = storage.add_job("log-item", "log-item", "download", {})
+        storage.append_job_log(job_id, "line one")
+        storage.append_job_log(job_id, "line two")
+        storage.append_job_log(job_id, "line three")
+
+        logs = storage.get_job_logs(job_id)
+        assert len(logs) == 3
+        assert [entry["line"] for entry in logs] == ["line one", "line two", "line three"]
+        # ts should be monotonically non-decreasing
+        assert logs[0]["ts"] <= logs[1]["ts"] <= logs[2]["ts"]
+
+    def test_job_logs_capped_at_500(self, storage):
+        job_id = storage.add_job("cap-item", "cap-item", "download", {})
+        for i in range(510):
+            storage.append_job_log(job_id, f"line {i}")
+
+        logs = storage.get_job_logs(job_id)
+        assert len(logs) == 500
+        # The retained lines should be the last 500 (lines 10–509)
+        assert logs[0]["line"] == "line 10"
+        assert logs[-1]["line"] == "line 509"
+
     def test_recent_downloads_only_returns_completed_jobs(self, storage):
         completed_id = storage.add_job("done-item", "done-item", "download", {"destdir": "/downloads"})
         failed_id = storage.add_job("failed-item", "failed-item", "download", {"destdir": "/downloads"})
@@ -448,6 +471,24 @@ def test_get_job_log(client, storage):
     job_id = storage.add_job("test-item", "test-item", "download", {})
     response = client.get(f"/api/jobs/{job_id}/log")
     assert response.status_code in (200, 404)
+
+
+def test_get_job_logs_endpoint(client, storage):
+    job_id = storage.add_job("log-item", "log-item", "download", {})
+    storage.append_job_log(job_id, "hello world")
+    storage.append_job_log(job_id, "second line")
+
+    response = client.get(f"/api/jobs/{job_id}/logs")
+    assert response.status_code == 200
+    logs = response.json["logs"]
+    assert len(logs) == 2
+    assert logs[0]["line"] == "hello world"
+    assert logs[1]["line"] == "second line"
+
+
+def test_get_job_logs_endpoint_404(client):
+    response = client.get("/api/jobs/99999/logs")
+    assert response.status_code == 404
 
 
 def test_queue_add_invalid(client):

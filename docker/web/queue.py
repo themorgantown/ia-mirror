@@ -125,6 +125,7 @@ class QueueWorker:
         
         # Run job
         def on_log(line):
+            self.storage.append_job_log(job_id, line)
             self._emit('on_job_log', job_id, line)
         
         def on_progress(progress):
