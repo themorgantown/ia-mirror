@@ -17,6 +17,8 @@
 - **Per-file retry with exponential backoff**: `download_single_file` retries failed downloads up to `IA_DOWNLOAD_RETRIES` times (default 3), with delay doubling from `IA_RETRY_BACKOFF_BASE` seconds (default 5s); respects shutdown signal during sleep
 - **CORS support**: Web API now accepts cross-origin requests via `Flask-CORS`
 - Improved path validation across file browser API endpoints
+- **Configurable host download directory**: `GET /api/config` returns `host_download_dir` (derived from `DOWNLOAD_DIR` env); `POST /api/config` persists a desired-next value; UI settings modal shows the current path, accepts a new value, and displays a restart-required snippet with a copy button — clarifies that changing the mount requires editing `.env` and restarting
+- Add `.env.example` for `DOWNLOAD_DIR`/`DATA_DIR`; `docker-compose.yml` uses these vars for volume mounts
 
 ### UI
 - Switch from dark terminal aesthetic to a clean light theme throughout the web UI
