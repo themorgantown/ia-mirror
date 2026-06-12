@@ -113,3 +113,30 @@ def test_security_traversal(client):
 
     response = client.get("/api/files/download?path=../etc/passwd")
     assert response.status_code == 403
+
+
+def test_security_symlink_escape(client, file_browser_root):
+    fd, outside_path = tempfile.mkstemp()
+    os.close(fd)
+    with open(outside_path, "w", encoding="utf-8") as handle:
+        handle.write("outside")
+
+    link_path = os.path.join(file_browser_root, "leak.txt")
+    try:
+        os.symlink(outside_path, link_path)
+    except (AttributeError, OSError):
+        os.remove(outside_path)
+        pytest.skip("symlinks are not available in this environment")
+
+    try:
+        list_response = client.get("/api/files/list")
+        assert list_response.status_code == 200
+        assert "leak.txt" not in [item["name"] for item in list_response.json["items"]]
+
+        content_response = client.get("/api/files/content?path=leak.txt")
+        assert content_response.status_code == 403
+
+        download_response = client.get("/api/files/download?path=leak.txt")
+        assert download_response.status_code == 403
+    finally:
+        os.remove(outside_path)

@@ -185,7 +185,15 @@ class JobStorage:
         """Get all queued jobs in order."""
         with self._get_conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC"
+                """
+                SELECT * FROM jobs
+                WHERE status = 'queued'
+                ORDER BY
+                    CASE WHEN queue_position IS NULL THEN 1 ELSE 0 END,
+                    queue_position ASC,
+                    created_at ASC,
+                    id ASC
+                """
             ).fetchall()
             return [dict(row) for row in rows]
     

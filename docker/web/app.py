@@ -32,11 +32,16 @@ def _resolve_secret_key(config):
 def create_app(config=None):
     """Create Flask application."""
     app = Flask(__name__, template_folder='../templates', static_folder='../static')
-    CORS(app)
     
     # Configuration: read from environment or passed dict
     if config is None:
         config = {}
+
+    cors_origins = config.get('CORS_ORIGINS') or os.getenv('WEB_CORS_ORIGINS')
+    if cors_origins:
+        origins = [origin.strip() for origin in str(cors_origins).split(',') if origin.strip()]
+        if origins:
+            CORS(app, origins=origins)
 
     secret_key = _resolve_secret_key(config)
     app.config['SECRET_KEY'] = secret_key

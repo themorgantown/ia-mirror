@@ -195,12 +195,24 @@ def register_routes(app, storage, worker, socketio, watcher=None):
                 for entry in it:
                     if entry.name.startswith('.'):
                         continue
-                    
-                    stat = entry.stat()
+
+                    entry_path = os.path.join(req_path, entry.name)
+                    try:
+                        rel_entry = os.path.relpath(entry_path, base_dir)
+                        safe_join(base_dir, rel_entry)
+                    except ValueError:
+                        continue
+
+                    try:
+                        stat = entry.stat()
+                        entry_type = 'directory' if entry.is_dir() else 'file'
+                    except OSError:
+                        continue
+
                     items.append({
                         'name': entry.name,
                         'path': os.path.join(path, entry.name).lstrip('/'),
-                        'type': 'directory' if entry.is_dir() else 'file',
+                        'type': entry_type,
                         'size': stat.st_size,
                         'mtime': stat.st_mtime
                     })

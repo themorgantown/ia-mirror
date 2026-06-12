@@ -272,6 +272,7 @@ See [docker/example.env](docker/example.env) for the full template.
 | `WEB_DB_PATH` | `/data/ui.db` | SQLite database path used by the entrypoint |
 | `WEB_RUNNER` | `real` | `real` or `mock` |
 | `WEB_SECRET_KEY` | generated at startup if unset | Set explicitly for stable sessions |
+| `WEB_CORS_ORIGINS` | unset | Optional comma-separated allowed origins for separate frontends; leave unset for same-origin Web UI use |
 
 ### Fetcher / CLI
 
@@ -331,6 +332,7 @@ docker run --rm ia-mirror:local --print-effective-config
 - Container runs as the non-root `app` user.
 - Environment-provided IA credentials are written with restrictive permissions.
 - The Web UI no longer ships with a static default secret; an ephemeral secret is generated when `WEB_SECRET_KEY` is unset.
+- Cross-origin API access is disabled by default; set `WEB_CORS_ORIGINS` only for trusted separate frontends.
 - The repository runs `pip-audit`, Dockerfile linting, image builds, and SBOM generation in CI.
 - Docker Scout monitoring runs on a schedule for image vulnerability review.
 

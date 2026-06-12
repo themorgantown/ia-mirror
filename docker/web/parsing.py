@@ -77,12 +77,15 @@ def safe_join(base: str, subpath: str) -> str:
         Joined absolute path if safe, otherwise raises ValueError.
     """
     import os
-    # Normalize base
-    base = os.path.normpath(base)
-    # Join and normalize
-    full = os.path.normpath(os.path.join(base, subpath))
-    # Ensure result starts with base
-    if not full.startswith(base):
+
+    base_real = os.path.realpath(base)
+    full = os.path.realpath(os.path.join(base_real, subpath))
+
+    try:
+        common = os.path.commonpath([base_real, full])
+    except ValueError:
+        raise ValueError(f"Path traversal attempt: {subpath} escapes {base}")
+    if common != base_real:
         raise ValueError(f"Path traversal attempt: {subpath} escapes {base}")
     return full
 
@@ -104,20 +107,16 @@ def validate_destination(path: str) -> bool:
     """
     import os
 
-    # Must start with allowed base directory
+    if not path or not os.path.isabs(path):
+        return False
+
     allowed_bases = ['/data', '/downloads']
-    if not any(path.startswith(base) for base in allowed_bases):
-        return False
-
-    # Normalize and check for escape attempts
-    normalized = os.path.normpath(path)
-    # Check for parent directory traversal
-    if '..' in normalized:
-        return False
-    # Ensure normalized path still starts with an allowed base
-    if not any(normalized.startswith(base) for base in allowed_bases):
-        return False
-
-    # Additional safety: no absolute symlink escapes
-    # (More thorough checks can be done at runtime)
-    return True
+    normalized = os.path.realpath(path)
+    for base in allowed_bases:
+        base_real = os.path.realpath(base)
+        try:
+            if os.path.commonpath([base_real, normalized]) == base_real:
+                return True
+        except ValueError:
+            continue
+    return False

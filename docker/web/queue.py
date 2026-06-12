@@ -105,6 +105,7 @@ class QueueWorker:
             
         # Update state
         self.storage.update_worker_state(active_job_id=job_id, is_processing_queue=True)
+        self.storage.start_job(job_id, None)
         
         # Create runner
         runner = create_runner(

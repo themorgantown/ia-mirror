@@ -8,7 +8,7 @@ cost/time estimation, graceful termination.
 import argparse, json, logging, os, shutil, signal, subprocess, sys, threading, time, math, fnmatch, socket, uuid, atexit, random, csv, hashlib, http.server
 import internetarchive
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import List, Tuple
 
 _IA_ARCHIVE_SESSION = None
@@ -45,6 +45,130 @@ REPORT_FILENAME = "report.json"
 
 _running_processes = []
 _shutdown_event = threading.Event()
+
+
+def _safe_archive_relative_path(filename: str, no_directories: bool = False) -> Path:
+    """Return a safe relative path for an IA filename.
+
+    Internet Archive metadata is remote input. Never let a filename escape the
+    destination directory via absolute paths or parent traversal.
+    """
+    normalized = str(filename or "").replace("\\", "/")
+    parsed = PurePosixPath(normalized)
+    parts = [part for part in parsed.parts if part not in ("", ".")]
+
+    if parsed.is_absolute() or not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Unsafe archive filename: {filename!r}")
+
+    if no_directories:
+        return Path(parts[-1])
+    return Path(*parts)
+
+
+def _safe_item_directory(item_id: str) -> Path:
+    """Return a safe directory name for a collection item identifier."""
+    normalized = str(item_id or "").replace("\\", "/")
+    parsed = PurePosixPath(normalized)
+    parts = [part for part in parsed.parts if part not in ("", ".")]
+    if parsed.is_absolute() or len(parts) != 1 or parts[0] == "..":
+        raise ValueError(f"Unsafe item identifier: {item_id!r}")
+    return Path(parts[0])
+
+
+def resolve_download_path(
+    dest: Path,
+    item_id: str,
+    filename: str,
+    *,
+    root_identifier: str | None = None,
+    collection_layout: bool = False,
+    no_directories: bool = False,
+) -> Path:
+    """Resolve where a remote file belongs on disk."""
+    rel_file = _safe_archive_relative_path(filename, no_directories=no_directories)
+    if collection_layout and root_identifier and item_id != root_identifier:
+        return dest / _safe_item_directory(item_id) / rel_file
+    return dest / rel_file
+
+
+def existing_candidate_paths(
+    dest: Path,
+    item_id: str,
+    filename: str,
+    *,
+    root_identifier: str | None = None,
+    collection_layout: bool = False,
+    no_directories: bool = False,
+) -> List[Path]:
+    """Return local paths that may already contain the requested file."""
+    primary = resolve_download_path(
+        dest,
+        item_id,
+        filename,
+        root_identifier=root_identifier,
+        collection_layout=collection_layout,
+        no_directories=no_directories,
+    )
+    candidates = [primary]
+
+    # Older single-item layouts may have files nested under dest/<identifier>/.
+    # Do not accept flat legacy paths for collection items, because identical
+    # filenames across items would be mistaken as complete.
+    if not collection_layout:
+        try:
+            legacy_nested = dest / _safe_item_directory(item_id) / _safe_archive_relative_path(
+                filename,
+                no_directories=no_directories,
+            )
+            if legacy_nested not in candidates:
+                candidates.append(legacy_nested)
+        except ValueError:
+            pass
+
+    return candidates
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def lock_is_stale(lock_info: dict, *, now: float | None = None, current_host: str | None = None) -> bool:
+    """Decide whether an existing lock can be safely replaced."""
+    now = time.time() if now is None else now
+    current_host = current_host or socket.gethostname()
+    stale_seconds = float(os.getenv("IA_LOCK_STALE_SECONDS", "86400"))
+
+    try:
+        pid = int(lock_info.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+
+    started_raw = lock_info.get("started")
+    try:
+        started = float(started_raw) if started_raw is not None else None
+    except (TypeError, ValueError):
+        started = None
+
+    lock_host = lock_info.get("host")
+    if lock_host == current_host and _pid_is_running(pid):
+        return False
+
+    # A lock from another container/host cannot be probed by PID. Treat recent
+    # locks as active, then let stale-lock cleanup recover old interrupted runs.
+    if lock_host and lock_host != current_host and started is not None:
+        return (now - started) > stale_seconds
+
+    return True
 
 # ---------- Health Check Server ----------
 class HealthCheckServer:
@@ -317,7 +441,8 @@ def run_cmd(cmd: List[str]) -> subprocess.CompletedProcess:
 
 def get_file_list(manifest: dict, include_globs: List[str]|None=None,
                   exclude_globs: List[str]|None=None,
-                  formats: List[str]|None=None) -> List[str]:
+                  formats: List[str]|None=None,
+                  source: str|None=None) -> List[str]:
     """Build file list using local manifest and glob/format filtering.
     - include_globs: one or more glob patterns to include (default ['*'])
     - exclude_globs: zero or more glob patterns to exclude
@@ -336,6 +461,9 @@ def get_file_list(manifest: dict, include_globs: List[str]|None=None,
     # Apply excludes
     if exclude_globs:
         acc = [f for f in acc if not any(fnmatch.fnmatchcase(f, x) for x in exclude_globs)]
+
+    if source:
+        acc = [f for f in acc if str(manifest.get(f, {}).get("source", "")).lower() == source.lower()]
     
     # Apply format filters (by extension)
     if formats:
@@ -557,45 +685,50 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
                          source: str|None=None, on_the_fly: bool=False,
                          xml_names: bool=False, ignore_existing: bool=False,
                          no_directories: bool=False,
-                         bucket: TokenBucket|None=None) -> Tuple[str, bool]:
+                         bucket: TokenBucket|None=None,
+                         root_identifier: str|None=None,
+                         collection_layout: bool=False) -> Tuple[str, bool]:
     if _shutdown_event.is_set(): return filename, False
-    # Expected path (our layout)
-    local_path = destdir / filename
-    # Alternate path: some ia versions add an extra identifier dir under --destdir
-    alt_local_path = destdir / identifier / filename
+    try:
+        local_path = resolve_download_path(
+            destdir,
+            identifier,
+            filename,
+            root_identifier=root_identifier,
+            collection_layout=collection_layout,
+            no_directories=no_directories,
+        )
+        candidate_paths = existing_candidate_paths(
+            destdir,
+            identifier,
+            filename,
+            root_identifier=root_identifier,
+            collection_layout=collection_layout,
+            no_directories=no_directories,
+        )
+    except ValueError as exc:
+        logging.error("%s", exc)
+        return filename, False
 
     # Check if file exists and we should ignore it
     if ignore_existing:
-        if local_path.exists():
-            _print_progress(f"✔ ignoring existing {filename}", idx, total)
-            return filename, True
-        if alt_local_path.exists():
-            _print_progress(f"✔ ignoring existing {identifier}/{filename}", idx, total)
-            return filename, True
+        for candidate in candidate_paths:
+            if candidate.exists():
+                _print_progress(f"✔ ignoring existing {candidate.relative_to(destdir)}", idx, total)
+                return filename, True
 
-    if local_path.exists() and verify_local_file(filename, local_path, manifest_entry, verify_mode):
-        if _json_output:
-            _print_json("file_end", {
-                "filename": filename,
-                "bytes_total": manifest_entry.get("size", 0),
-                "status": "skipped",
-                "message": "Already exists"
-            })
-        else:
-            _print_progress(f"✔ already have {filename}", idx, total)
-        return filename, True
-    # Fallback: accept files that exist under the nested identifier directory
-    if alt_local_path.exists() and verify_local_file(filename, alt_local_path, manifest_entry, verify_mode):
-        if _json_output:
-            _print_json("file_end", {
-                "filename": filename,
-                "bytes_total": manifest_entry.get("size", 0),
-                "status": "skipped",
-                "message": "Already exists (alt path)"
-            })
-        else:
-            _print_progress(f"✔ already have {identifier}/{filename}", idx, total)
-        return filename, True
+    for candidate in candidate_paths:
+        if candidate.exists() and verify_local_file(filename, candidate, manifest_entry, verify_mode):
+            if _json_output:
+                _print_json("file_end", {
+                    "filename": filename,
+                    "bytes_total": manifest_entry.get("size", 0),
+                    "status": "skipped",
+                    "message": "Already exists"
+                })
+            else:
+                _print_progress(f"✔ already have {candidate.relative_to(destdir)}", idx, total)
+            return filename, True
     local_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Respect global polite backoff before starting a network-heavy call
@@ -900,14 +1033,41 @@ def write_report(report_path: Path, data: dict):
     except Exception as e:
         print(f"WARNING: Failed to write {report_path.name}: {e}", file=sys.stderr)
 
-def perform_sync(dest: Path, manifests: dict, dry_run: bool) -> List[str]:
+def perform_sync(
+    dest: Path,
+    manifests: dict,
+    dry_run: bool,
+    *,
+    root_identifier: str | None = None,
+    collection_layout: bool = False,
+    no_directories: bool = False,
+) -> List[str]:
     """Identify and optionally delete local files not in any manifest."""
     valid_files = set()
     for item_id, manifest in manifests.items():
         for filename in manifest.keys():
-            valid_files.add(filename)
-            # Also consider the alternate path if it was used
-            valid_files.add(os.path.join(item_id, filename))
+            try:
+                resolved = resolve_download_path(
+                    dest,
+                    item_id,
+                    filename,
+                    root_identifier=root_identifier,
+                    collection_layout=collection_layout,
+                    no_directories=no_directories,
+                )
+                valid_files.add(resolved.relative_to(dest).as_posix())
+                if not collection_layout:
+                    for candidate in existing_candidate_paths(
+                        dest,
+                        item_id,
+                        filename,
+                        root_identifier=root_identifier,
+                        collection_layout=collection_layout,
+                        no_directories=no_directories,
+                    ):
+                        valid_files.add(candidate.relative_to(dest).as_posix())
+            except (ValueError, OSError):
+                continue
 
     orphans = []
     # Files to never delete
@@ -930,10 +1090,7 @@ def perform_sync(dest: Path, manifests: dict, dry_run: bool) -> List[str]:
                 continue
             
             rel_path = rel_root / f
-            rel_path_str = str(rel_path)
-            
-            # Normalize path for comparison (IA uses forward slashes)
-            norm_path = rel_path_str.replace(os.sep, '/')
+            norm_path = rel_path.as_posix()
             
             if norm_path not in valid_files:
                 orphans.append(norm_path)
@@ -1307,6 +1464,14 @@ def main():
         if lock_path.exists():
             try:
                 existing = json.loads(lock_path.read_text())
+                if not lock_is_stale(existing):
+                    logging.error(
+                        "Active lock file exists at %s (PID %s on %s). Use --no-lock only if you are certain no other run is active.",
+                        lock_path,
+                        existing.get("pid"),
+                        existing.get("host"),
+                    )
+                    return 3
                 logging.info("Removing stale lock file from %s (PID %s)", lock_path, existing.get('pid'))
             except Exception:
                 logging.info("Removing stale lock file from %s", lock_path)
@@ -1418,6 +1583,8 @@ def main():
     else:
         logging.info("Processing collection '%s' with %d items", identifier, len(items))
 
+    collection_layout = any(item != identifier for item in items)
+
     if args.resumefolders:
         zip_glob = "*.zip"
         job_list = []
@@ -1425,10 +1592,17 @@ def main():
         will_download = []
         for item in items:
             manifest = manifests.get(item, {})
-            files = get_file_list(manifest, [zip_glob], args.exclude, None)
+            files = get_file_list(manifest, [zip_glob], args.exclude, None, args.source)
             for fn in files:
                 stem = Path(fn).stem
-                folder_path = dest / stem
+                folder_base = dest
+                if collection_layout and item != identifier:
+                    try:
+                        folder_base = dest / _safe_item_directory(item)
+                    except ValueError as exc:
+                        logging.error("%s", exc)
+                        continue
+                folder_path = folder_base / stem
                 if folder_path.exists() and folder_path.is_dir():
                     will_skip.append((item, fn))
                 else:
@@ -1440,8 +1614,8 @@ def main():
             print(f"Would skip {len(will_skip)} (local folder exists)")
             
             summary_files = []
-            for _, fn in will_download:
-                summary_files.append({"filename": fn, "size": manifests.get(item, {}).get(fn, {}).get("size")})
+            for item, fn in will_download:
+                summary_files.append({"filename": fn, "item": item, "size": manifests.get(item, {}).get(fn, {}).get("size")})
 
             if _json_output:
                 _print_json("dry_run_summary", {
@@ -1482,7 +1656,37 @@ def main():
             elif f:
                 formats.append(f)
  
-        job_list = [(item, f) for item in items for f in get_file_list(manifests.get(item, {}), include_globs, exclude_globs, formats)]
+        job_list = [
+            (item, f)
+            for item in items
+            for f in get_file_list(manifests.get(item, {}), include_globs, exclude_globs, formats, args.source)
+        ]
+
+    unsafe_jobs = []
+    validated_job_list = []
+    for item, fname in job_list:
+        try:
+            resolve_download_path(
+                dest,
+                item,
+                fname,
+                root_identifier=identifier,
+                collection_layout=collection_layout,
+                no_directories=args.no_directories,
+            )
+            validated_job_list.append((item, fname))
+        except ValueError as exc:
+            unsafe_jobs.append((item, fname, str(exc)))
+
+    if unsafe_jobs:
+        for item, fname, reason in unsafe_jobs[:10]:
+            logging.error("Refusing unsafe archive path for %s/%s: %s", item, fname, reason)
+        if len(unsafe_jobs) > 10:
+            logging.error("Refusing %d additional unsafe archive paths", len(unsafe_jobs) - 10)
+        print("❌ Refusing to continue because the IA manifest contains unsafe file paths.", file=sys.stderr)
+        return 1
+
+    job_list = validated_job_list
 
     logging.info("Built job list with %d files", len(job_list))
     total_jobs = len(job_list)
@@ -1498,12 +1702,21 @@ def main():
         
         for item, fname in job_list:
             key = f"{item}/{fname}"
-            local_path = dest / fname
-            alt_local_path = dest / item / fname
             manifest_entry = manifests.get(item, {}).get(fname, {})
-            
-            if ((local_path.exists() and verify_local_file(fname, local_path, manifest_entry, args.verify_mode)) or
-                (alt_local_path.exists() and verify_local_file(fname, alt_local_path, manifest_entry, args.verify_mode))):
+            try:
+                paths = existing_candidate_paths(
+                    dest,
+                    item,
+                    fname,
+                    root_identifier=identifier,
+                    collection_layout=collection_layout,
+                    no_directories=args.no_directories,
+                )
+            except ValueError as exc:
+                logging.error("%s", exc)
+                continue
+
+            if any(path.exists() and verify_local_file(fname, path, manifest_entry, args.verify_mode) for path in paths):
                 if key not in status["done"]:
                     status["done"].append(key)
             else:
@@ -1530,14 +1743,24 @@ def main():
             unknown_files += 1; continue
             
         total_remote_bytes += sz
-        local_path = (dest / fname)
-        alt_local_path = dest / item / fname
-        if local_path.exists():
-            local_size = local_path.stat().st_size
-        elif alt_local_path.exists():
-            local_size = alt_local_path.stat().st_size
-        else:
-            local_size = 0
+        local_size = 0
+        try:
+            candidates = existing_candidate_paths(
+                dest,
+                item,
+                fname,
+                root_identifier=identifier,
+                collection_layout=collection_layout,
+                no_directories=args.no_directories,
+            )
+        except ValueError as exc:
+            logging.error("%s", exc)
+            unknown_files += 1
+            continue
+        for candidate in candidates:
+            if candidate.exists():
+                local_size = candidate.stat().st_size
+                break
         remaining = max(sz - local_size, 0)
         if remaining > 0: 
             remaining_bytes += remaining
@@ -1583,7 +1806,14 @@ def main():
         
         orphans = []
         if args.sync:
-            orphans = perform_sync(dest, manifests, dry_run=True)
+            orphans = perform_sync(
+                dest,
+                manifests,
+                dry_run=True,
+                root_identifier=identifier,
+                collection_layout=collection_layout,
+                no_directories=args.no_directories,
+            )
             if orphans:
                 print(f"\n🧹 Sync Dry-Run: {len(orphans)} orphaned files would be deleted:")
                 for o in orphans[:10]: print(f"  - {o}")
@@ -1619,11 +1849,21 @@ def main():
     if args.verify_only:
         ok=0
         for idx, (item,fname) in enumerate(job_list,1):
-            p1 = dest/fname
-            p2 = dest/item/fname
             manifest_entry = manifests.get(item, {}).get(fname, {})
-            if (verify_local_file(fname, p1, manifest_entry, args.verify_mode) or
-                verify_local_file(fname, p2, manifest_entry, args.verify_mode)):
+            try:
+                paths = existing_candidate_paths(
+                    dest,
+                    item,
+                    fname,
+                    root_identifier=identifier,
+                    collection_layout=collection_layout,
+                    no_directories=args.no_directories,
+                )
+            except ValueError as exc:
+                logging.error("%s", exc)
+                paths = []
+
+            if any(verify_local_file(fname, path, manifest_entry, args.verify_mode) for path in paths):
                 ok+=1; _print_progress(f"✔ {fname}", idx, total_jobs)
             else:
                 print(f"\n✖ {fname}")
@@ -1631,7 +1871,14 @@ def main():
         
         orphans = []
         if args.sync:
-            orphans = perform_sync(dest, manifests, dry_run=False)
+            orphans = perform_sync(
+                dest,
+                manifests,
+                dry_run=False,
+                root_identifier=identifier,
+                collection_layout=collection_layout,
+                no_directories=args.no_directories,
+            )
             print(f"🧹 Sync: Deleted {len(orphans)} orphaned files.")
 
         write_report(dest/REPORT_FILENAME, {
@@ -1693,6 +1940,8 @@ def main():
                 args.ignore_existing,
                 args.no_directories,
                 global_bucket,
+                identifier,
+                collection_layout,
             ): (item, fname)
             for idx, (item, fname) in enumerate(job_list, 1)
             if f"{item}/{fname}" in status["pending"]
@@ -1715,7 +1964,14 @@ def main():
             save_status(identifier, dest, status)
         
         if args.sync and not _shutdown_event.is_set():
-            orphans = perform_sync(dest, manifests, dry_run=False)
+            orphans = perform_sync(
+                dest,
+                manifests,
+                dry_run=False,
+                root_identifier=identifier,
+                collection_layout=collection_layout,
+                no_directories=args.no_directories,
+            )
             print(f"\n🧹 Sync: Deleted {len(orphans)} orphaned files.")
     finally:
         # ensure a final report is written even on SIGTERM

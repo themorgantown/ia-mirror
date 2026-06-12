@@ -72,6 +72,13 @@ class TestDestinationValidation:
         assert not validate_destination("/data/../../")
         assert not validate_destination("/etc/passwd")
         assert not validate_destination("/root")
+        assert not validate_destination("/downloads_evil")
+        assert not validate_destination("/data-backup")
+        assert not validate_destination("downloads/item")
+
+    def test_accepts_normalized_download_paths(self):
+        assert validate_destination("/downloads")
+        assert validate_destination("/downloads/item")
 
 
 class TestJobStorage:
@@ -99,6 +106,16 @@ class TestJobStorage:
 
         jobs = storage.get_queued_jobs()
         assert [job["identifier"] for job in jobs] == ["item1", "item2"]
+
+    def test_reorder_queue_changes_execution_order(self, storage):
+        first = storage.add_job("item1", "item1", "download", {})
+        second = storage.add_job("item2", "item2", "download", {})
+        third = storage.add_job("item3", "item3", "download", {})
+
+        storage.reorder_queue([third, first, second])
+
+        jobs = storage.get_queued_jobs()
+        assert [job["identifier"] for job in jobs] == ["item3", "item1", "item2"]
 
     def test_update_job_status(self, storage):
         job_id = storage.add_job("test", "test", "download", {})
@@ -211,6 +228,27 @@ class TestQueueWorker:
         assert any(event[0] == "start" for event in events)
         assert any(event[0] == "complete" for event in events)
 
+    def test_job_is_marked_running_before_runner_executes(self, storage_and_worker):
+        storage, worker = storage_and_worker
+        job_id = storage.add_job("test-item", "test-item", "download", {"destdir": "/tmp"})
+        observed = {}
+
+        class InspectRunner:
+            def run(self, _on_log, _on_progress):
+                observed["status_during_run"] = storage.get_job(job_id)["status"]
+                observed["queued_during_run"] = [job["identifier"] for job in storage.get_queued_jobs()]
+                return 0
+
+            def stop(self):
+                pass
+
+        with patch("web.queue.create_runner", return_value=InspectRunner()):
+            worker._run_job(storage.get_job(job_id))
+
+        assert observed["status_during_run"] == "running"
+        assert observed["queued_during_run"] == []
+        assert storage.get_job(job_id)["status"] == "completed"
+
 
 def test_create_app_generates_secret_when_missing(monkeypatch):
     monkeypatch.delenv("WEB_SECRET_KEY", raising=False)
@@ -221,6 +259,19 @@ def test_create_app_generates_secret_when_missing(monkeypatch):
         assert app.config["SECRET_KEY"] != "dev-secret-key"
         app.worker.stop()
         app.watcher.stop()
+
+
+def test_create_app_does_not_enable_wildcard_cors_by_default(monkeypatch):
+    monkeypatch.delenv("WEB_CORS_ORIGINS", raising=False)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        app, _socketio = create_app({"DB_PATH": os.path.join(tmpdir, "test.db"), "RUNNER_TYPE": "mock"})
+        try:
+            response = app.test_client().get("/api/config", headers={"Origin": "https://evil.example"})
+            assert response.headers.get("Access-Control-Allow-Origin") is None
+        finally:
+            app.worker.stop()
+            app.watcher.stop()
 
 
 MOCK_METADATA_RESPONSE = {
