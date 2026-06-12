@@ -382,6 +382,19 @@ class JobStorage:
                 (identifier,)
             )
     
+    def reset_interrupted_jobs(self):
+        """Reset any jobs left in 'running' state to 'failed' (e.g. after a worker crash)."""
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'failed',
+                    error_message = 'Interrupted: worker restarted',
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE status = 'running'
+                """
+            )
+
     def reset_stuck_jobs(self):
         """Reset any jobs that were left running when the server stopped."""
         with self._get_conn() as conn:

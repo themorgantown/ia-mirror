@@ -203,6 +203,24 @@ class TestQueueWorker:
             finally:
                 worker.stop()
 
+    def test_orphaned_running_jobs_reset_to_failed_on_startup(self):
+        """Jobs left in 'running' state (e.g. after a crash) must be marked failed when a new worker starts."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = JobStorage(os.path.join(tmpdir, "orphan.db"))
+            job_id = storage.add_job("orphan-item", "orphan-item", "download", {})
+            # Simulate the job being mid-run when the previous worker died
+            storage.update_job_status(job_id, "running")
+            assert storage.get_job(job_id)["status"] == "running"
+
+            # Creating a new QueueWorker must reset that orphaned job to failed
+            worker = QueueWorker(storage, runner_type="mock")
+            try:
+                job = storage.get_job(job_id)
+                assert job["status"] == "failed"
+                assert job["error_message"] == "Interrupted: worker restarted"
+            finally:
+                worker.stop()
+
     def test_job_callbacks(self, storage_and_worker):
         storage, worker = storage_and_worker
         events = []

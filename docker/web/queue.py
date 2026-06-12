@@ -31,6 +31,8 @@ class QueueWorker:
             'on_job_log': [],
             'on_job_complete': [],
         }
+        # Reset any jobs that were left running from a previous worker lifecycle
+        self.storage.reset_interrupted_jobs()
     
     def add_callback(self, event: str, callback: Callable):
         """Add callback for an event."""
