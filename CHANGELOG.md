@@ -29,9 +29,13 @@
 - Remove `data-bs-theme=dark` from modals
 - Update brand kicker text
 
+### Fixed
+- `docker-compose.yml` now sets `WEB_HOST=0.0.0.0` inside the container and publishes the UI on `127.0.0.1:17865` — without this, the new `WEB_HOST` hardening default left the published port unreachable while the healthcheck still passed
+
 ### Documentation
 - Expand README with a detailed feature comparison between ia-mirror and the base `internetarchive` library
 - Add new environment variable examples to `example.env` (`IA_DOWNLOAD_RETRIES`, `IA_RETRY_BACKOFF_BASE`)
+- Full README review: corrected `IA_CONCURRENCY` default (4, not 5) and `WEB_HOST` default (`127.0.0.1`); documented the `DOWNLOAD_DIR`/`.env` download-location workflow with macOS/Windows/Linux examples; added Windows shell notes, missing API endpoints (job logs, unlock, watcher, clear-history), and a troubleshooting entry for the healthy-but-unreachable UI case; moved the project description above the comparison table
 
 ### CI/CD
 - Pin `docker-scout-monitor.yml`, `release-buildx.yml`, `sync-readme-to-dockerhub.yml`, and `ci.yml` workflow actions to immutable commit SHAs

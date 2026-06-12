@@ -2,29 +2,7 @@
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/themorgantown/ia-mirror)](https://hub.docker.com/r/themorgantown/ia-mirror)
 
-## What ia-mirror Adds Beyond `internetarchive`
-
-Upstream [`jjjake/internetarchive`](https://github.com/jjjake/internetarchive) provides the `ia` CLI and Python API for Archive.org operations such as download, upload, search, metadata edits, listing, copy/move/delete, reviews, tasks, and account/configuration commands. `ia-mirror` keeps `internetarchive` as its core dependency, then adds the mirroring appliance features below.
-
-| Feature in ia-mirror | Upstream `internetarchive` status | What this project adds |
-|----------------------|-----------------------------------|------------------------|
-| Persistent Web UI | Not native; upstream is CLI/Python API focused | Browser queue manager, global settings, job history, file browser, log viewer, and WebSocket progress |
-| Docker-first appliance | Not native; upstream supports `pip`, `pipx`, source installs, and a standalone binary | Production container with Gunicorn Web UI, healthcheck, non-root runtime, Compose/Unraid-oriented defaults, and mounted `/downloads` + `/data` state |
-| SQLite job queue and history | Not native | Durable queued/running/completed job state, reorder/delete controls, and automatic queue resume after restart |
-| Per-item mirror reports | Not native | `report.json`, `.ia_status/<identifier>.json`, lock files, and status snapshots beside each downloaded item |
-| Built-in parallel mirror workers | Upstream recommends composing with tools such as GNU Parallel for multi-item concurrency | `-j`/`IA_CONCURRENCY` worker pool inside the wrapper with aggregate progress and ETA |
-| Collection watcher | Not native | Background service that watches collections and queues new/future items |
-| Browser/API batch input | Partially covered by upstream `--itemlist` and `--search` | Paste identifiers or archive.org URLs into the UI/API and normalize them into queued jobs with shared settings |
-| CSV source-to-destination batch mode | Not native for downloads | Batch CSV mode that maps each source identifier to its own destination path and wrapper settings |
-| Verify-only mirror checks | Not native as a standalone download workflow | Check existing local files without downloading, with `exists`, `size`, or `checksum` verification modes |
-| Local sync cleanup | Not native for local mirrors | `--sync` removes local files that are no longer present in the remote IA item manifest |
-| Estimate and cost reporting | Not native | `--estimate-only`, dry-run reports, assumed bandwidth, and optional cost-per-GB calculations |
-| Bandwidth cap and aggregate speed sampling | Not native | Approximate `--max-mbps` throttling plus sampled aggregate transfer speed/ETA |
-| Polite global backoff controls | Partially covered by upstream retry/timeout flags | Wrapper-level exponential backoff for HTTP 429/5xx responses with configurable base/max/multiplier/jitter |
-| Container-friendly env configuration | Upstream has config files and its own credential/env conventions | `IA_*` and `WEB_*` env-to-argument injection, `--print-effective-config`, and automatic `ia.ini` creation from `IA_ACCESS_KEY`/`IA_SECRET_KEY` |
-| ZIP folder resume helper | Not native | `--resumefolders` skips ZIP downloads when the expected extracted folder already exists |
-
-ia-mirror is a Docker-first Internet Archive mirroring utility. It wraps the `internetarchive` Python package and `ia` CLI with resumable downloads, batch queuing, structured reports, metadata caching, bandwidth throttling, and a persistent Web UI.
+ia-mirror is a Docker-first Internet Archive mirroring utility. It wraps the `internetarchive` Python package and `ia` CLI with resumable downloads, batch queuing, structured reports, metadata caching, bandwidth throttling, and a persistent Web UI. See [what ia-mirror adds beyond `internetarchive`](#what-ia-mirror-adds-beyond-internetarchive) for a feature-by-feature comparison with the upstream tool.
 
 Use reasonable concurrency, keep polite backoff enabled, and avoid unnecessary repeated metadata fetches. If you rely on Internet Archive heavily, consider donating at https://archive.org/donate/.
 
@@ -60,14 +38,34 @@ docker run -d \
   --name ia-mirror \
   -v "$PWD/mirror:/downloads" \
   -v "$PWD/ia-state:/data" \
-  -p 17865:17865 \
+  -p 127.0.0.1:17865:17865 \
+  -e WEB_HOST=0.0.0.0 \
   -e WEB_SECRET_KEY="replace-with-a-long-random-value" \
   themorgantown/ia-mirror:latest
 ```
 
 Open http://localhost:17865.
 
-If `WEB_SECRET_KEY` is unset, the app now generates a random secret at startup. That is safe, but sessions will reset when the container restarts.
+Two flags deserve explanation:
+
+- `-e WEB_HOST=0.0.0.0` is required whenever you publish the port. Inside the container, the server binds to `127.0.0.1` by default as a hardening measure, and Docker's port mapping cannot reach a loopback-bound server.
+- `-p 127.0.0.1:17865:17865` keeps the UI reachable only from the machine running Docker. To reach it from other devices on your network (a NAS or homelab box, for example), use `-p 17865:17865` instead.
+
+If `WEB_SECRET_KEY` is unset, the app generates a random secret at startup. That is safe, but sessions reset when the container restarts.
+
+### Choosing where files are saved
+
+The left-hand side of each `-v` flag is the folder on your computer. The example above saves into `./mirror` next to where you ran the command. To save into your Downloads folder instead:
+
+- macOS: `-v "$HOME/Downloads/ia-mirror:/downloads"`
+- Linux: `-v "$HOME/Downloads/ia-mirror:/downloads"`
+- Windows: `-v "C:/Users/yourname/Downloads/ia-mirror:/downloads"`
+
+If you use Docker Compose, set `DOWNLOAD_DIR` in a `.env` file instead — see [Docker Compose](#docker-compose).
+
+### Windows notes
+
+The examples in this README use bash syntax and work as-is in WSL2 and Git Bash. In PowerShell, replace the trailing `\` line continuations with backticks (`` ` ``) or put the command on one line; `$PWD` works in PowerShell, but in cmd.exe use `%cd%` instead. Write Windows paths with forward slashes, for example `C:/Users/yourname/Downloads`.
 
 ### CLI Mode
 
@@ -81,7 +79,7 @@ docker run --rm \
   themorgantown/ia-mirror:latest
 ```
 
-No credentials are needed for public-item dry runs.
+No credentials are needed for public-item dry runs. Remove `IA_DRY_RUN` (or set it to `0`) to actually download.
 
 ## Authentication
 
@@ -118,10 +116,43 @@ When `IA_DESTDIR=/downloads`, downloaded files land in `/downloads/<identifier>/
 
 1. Start the stack: `docker compose up -d`
 2. Open http://localhost:17865
-3. Optional: copy the template with `cp docker/example.env docker/live.env`
-4. Optional: edit `docker/live.env` with credentials, Web UI defaults, or CLI-mode settings
+3. Optional: choose a download folder — see below
+4. Optional: copy the template with `cp docker/example.env docker/live.env` and edit it with credentials, Web UI defaults, or CLI-mode settings
 
-For CLI mode through Compose, set `WEB_ENABLED=false` and a real `IA_IDENTIFIER` in `docker/live.env`, or pass them with `docker compose run --rm -e WEB_ENABLED=false -e IA_IDENTIFIER=The_Babe_Ruth_Collection ia-mirror`.
+By default the Web UI is published on `127.0.0.1` and only reachable from the machine running Docker. To allow access from other devices on your network, change the `ports:` entry in `docker-compose.yml` from `"127.0.0.1:17865:17865"` to `"17865:17865"`.
+
+### Choosing the download folder
+
+Without configuration, files are saved to `./downloads` next to `docker-compose.yml`. To save somewhere else, create a `.env` file at the project root (Compose reads it automatically):
+
+```bash
+cp .env.example .env
+```
+
+Then set `DOWNLOAD_DIR` to a full absolute path:
+
+```bash
+# macOS
+DOWNLOAD_DIR=/Users/yourname/Downloads
+# Windows
+DOWNLOAD_DIR=C:/Users/yourname/Downloads
+# Linux
+DOWNLOAD_DIR=/home/yourname/Downloads
+```
+
+Notes:
+
+- Tilde (`~`) is not expanded by Docker Compose — write the full path.
+- Quote paths containing spaces: `DOWNLOAD_DIR="/Users/yourname/My Downloads"`.
+- `DATA_DIR` works the same way for the `/data` volume (database and queue state).
+- This setting must go in `.env` at the project root, not `docker/live.env`. Compose only reads volume paths from `.env`.
+- Apply changes with `docker compose down && docker compose up -d`.
+
+You can also change this from the Web UI: the Settings panel shows the current download location and, when you type a new path, generates the exact `.env` line with a copy button. A container restart applies it.
+
+### CLI mode through Compose
+
+Set `WEB_ENABLED=false` and a real `IA_IDENTIFIER` in `docker/live.env`, or pass them with `docker compose run --rm -e WEB_ENABLED=false -e IA_IDENTIFIER=The_Babe_Ruth_Collection ia-mirror`.
 
 Do not use `IA_IDENTIFIER=example_item`; it is placeholder text. Blank or missing `IA_IDENTIFIER` is fine for Web UI mode, but CLI mode exits with `identifier required`.
 
@@ -134,7 +165,7 @@ services:
       - ~/.config/ia:/home/app/.config/ia:ro
 ```
 
-To switch from dry run to real downloads, set `IA_DRY_RUN=0` in your compose env file.
+To switch from dry run to real downloads, set `IA_DRY_RUN=0` in your compose env file, or remove the line.
 
 ## Web UI Workflow
 
@@ -158,7 +189,7 @@ Basic controls include:
 - glob, exclude, and format filters
 - collection mode and verify-only mode
 
-The Global Settings modal persists UI defaults and optional IA credentials to the SQLite database.
+The Global Settings modal persists UI defaults and optional IA credentials to the SQLite database. It also shows the current host download location and helps you change it (see [Choosing the download folder](#choosing-the-download-folder)).
 
 ## Web UI API
 
@@ -168,6 +199,7 @@ The Global Settings modal persists UI defaults and optional IA credentials to th
 - `POST /api/config`
 - `GET /api/destinations`
 - `POST /api/destinations/validate`
+- `POST /api/maintenance/clear-history`
 
 ### Queue and job control
 
@@ -176,13 +208,22 @@ The Global Settings modal persists UI defaults and optional IA credentials to th
 - `DELETE /api/queue/<id>`
 - `POST /api/job/start`
 - `POST /api/job/stop`
+- `POST /api/jobs/<id>/unlock`
 
 ### Status and history
 
 - `GET /api/status`
 - `GET /api/jobs`
+- `GET /api/jobs/recent`
 - `GET /api/jobs/<id>`
 - `GET /api/jobs/<id>/log`
+- `GET /api/jobs/<id>/logs`
+
+### Collection watcher
+
+- `GET /api/watcher/collections`
+- `POST /api/watcher/collections`
+- `DELETE /api/watcher/collections/<identifier>`
 
 ### File browser
 
@@ -262,12 +303,19 @@ docker run --rm \
 
 See [docker/example.env](docker/example.env) for the full template.
 
+### Docker Compose (`.env` at project root)
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `DOWNLOAD_DIR` | `./downloads` | Host folder mounted at `/downloads`; full absolute paths only |
+| `DATA_DIR` | `./data` | Host folder mounted at `/data` |
+
 ### Web UI
 
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `WEB_ENABLED` | `true` | Starts the Web UI unless explicitly disabled |
-| `WEB_HOST` | `0.0.0.0` | Gunicorn bind host |
+| `WEB_HOST` | `127.0.0.1` | Gunicorn bind host inside the container. Set to `0.0.0.0` whenever you publish the port; `docker-compose.yml` does this for you |
 | `WEB_PORT` | `17865` | Web UI listen port |
 | `WEB_DB_PATH` | `/data/ui.db` | SQLite database path used by the entrypoint |
 | `WEB_RUNNER` | `real` | `real` or `mock` |
@@ -280,7 +328,7 @@ See [docker/example.env](docker/example.env) for the full template.
 |----------|---------|-------|
 | `IA_IDENTIFIER` | none | Not needed for Web UI startup; required in CLI mode unless provided as a CLI arg |
 | `IA_DESTDIR` | `/downloads` | Root destination directory |
-| `IA_CONCURRENCY` | `5` | Parallel workers |
+| `IA_CONCURRENCY` | `4` | Parallel workers |
 | `IA_DRY_RUN` | `false` | Simulate downloads |
 | `IA_VERIFY_MODE` | `size` | `exists`, `size`, or `checksum` |
 | `IA_CHECKSUM` | unset | Shortcut for checksum verification |
@@ -300,6 +348,28 @@ Per item, ia-mirror writes:
 - `/downloads/<identifier>/.ia_status/lock.json`
 
 `report.json` is produced for dry runs and estimate-only runs as well as completed downloads.
+
+## What ia-mirror Adds Beyond `internetarchive`
+
+Upstream [`jjjake/internetarchive`](https://github.com/jjjake/internetarchive) provides the `ia` CLI and Python API for Archive.org operations such as download, upload, search, metadata edits, listing, copy/move/delete, reviews, tasks, and account/configuration commands. `ia-mirror` keeps `internetarchive` as its core dependency, then adds the mirroring appliance features below.
+
+| Feature in ia-mirror | Upstream `internetarchive` status | What this project adds |
+|----------------------|-----------------------------------|------------------------|
+| Persistent Web UI | Not native; upstream is CLI/Python API focused | Browser queue manager, global settings, job history, file browser, log viewer, and WebSocket progress |
+| Docker-first appliance | Not native; upstream supports `pip`, `pipx`, source installs, and a standalone binary | Production container with Gunicorn Web UI, healthcheck, non-root runtime, Compose/Unraid-oriented defaults, and mounted `/downloads` + `/data` state |
+| SQLite job queue and history | Not native | Durable queued/running/completed job state, reorder/delete controls, and automatic queue resume after restart |
+| Per-item mirror reports | Not native | `report.json`, `.ia_status/<identifier>.json`, lock files, and status snapshots beside each downloaded item |
+| Built-in parallel mirror workers | Upstream recommends composing with tools such as GNU Parallel for multi-item concurrency | `-j`/`IA_CONCURRENCY` worker pool inside the wrapper with aggregate progress and ETA |
+| Collection watcher | Not native | Background service that watches collections and queues new/future items |
+| Browser/API batch input | Partially covered by upstream `--itemlist` and `--search` | Paste identifiers or archive.org URLs into the UI/API and normalize them into queued jobs with shared settings |
+| CSV source-to-destination batch mode | Not native for downloads | Batch CSV mode that maps each source identifier to its own destination path and wrapper settings |
+| Verify-only mirror checks | Not native as a standalone download workflow | Check existing local files without downloading, with `exists`, `size`, or `checksum` verification modes |
+| Local sync cleanup | Not native for local mirrors | `--sync` removes local files that are no longer present in the remote IA item manifest |
+| Estimate and cost reporting | Not native | `--estimate-only`, dry-run reports, assumed bandwidth, and optional cost-per-GB calculations |
+| Bandwidth cap and aggregate speed sampling | Not native | Approximate `--max-mbps` throttling plus sampled aggregate transfer speed/ETA |
+| Polite global backoff controls | Partially covered by upstream retry/timeout flags | Wrapper-level exponential backoff for HTTP 429/5xx responses with configurable base/max/multiplier/jitter |
+| Container-friendly env configuration | Upstream has config files and its own credential/env conventions | `IA_*` and `WEB_*` env-to-argument injection, `--print-effective-config`, and automatic `ia.ini` creation from `IA_ACCESS_KEY`/`IA_SECRET_KEY` |
+| ZIP folder resume helper | Not native | `--resumefolders` skips ZIP downloads when the expected extracted folder already exists |
 
 ## Development
 
@@ -330,8 +400,9 @@ docker run --rm ia-mirror:local --print-effective-config
 ## Security and Release Readiness
 
 - Container runs as the non-root `app` user.
+- The Web UI binds to `127.0.0.1` inside the container by default; exposure is opt-in via `WEB_HOST=0.0.0.0` plus port publishing.
 - Environment-provided IA credentials are written with restrictive permissions.
-- The Web UI no longer ships with a static default secret; an ephemeral secret is generated when `WEB_SECRET_KEY` is unset.
+- The Web UI does not ship with a static default secret; an ephemeral secret is generated when `WEB_SECRET_KEY` is unset.
 - Cross-origin API access is disabled by default; set `WEB_CORS_ORIGINS` only for trusted separate frontends.
 - The repository runs `pip-audit`, Dockerfile linting, image builds, and SBOM generation in CI.
 - Docker Scout monitoring runs on a schedule for image vulnerability review.
@@ -347,7 +418,7 @@ docker scout recommendations ia-mirror:local
 
 ## Testing
 
-The existing release gate is the full test suite in [tests/runtests.sh](tests/runtests.sh). It covers Python backend tests, CLI integration tests, and Web UI integration tests.
+The release gate is the full test suite in [tests/runtests.sh](tests/runtests.sh). It covers Python backend tests, CLI integration tests, and Web UI integration tests.
 
 To run everything:
 
@@ -359,13 +430,18 @@ Test artifacts are written under `tests/test_output/`.
 
 ## Troubleshooting
 
+### Container is healthy but the UI is unreachable
+
+The server inside the container binds to `127.0.0.1` by default, which port publishing cannot reach. Pass `-e WEB_HOST=0.0.0.0` with `docker run` (the bundled `docker-compose.yml` already sets it). The healthcheck still passes in this state because it runs inside the container.
+
 ### Web UI port already in use
 
 ```bash
 docker run -d \
   -v "$PWD/mirror:/downloads" \
   -v "$PWD/ia-state:/data" \
-  -p 9090:17865 \
+  -p 127.0.0.1:9090:17865 \
+  -e WEB_HOST=0.0.0.0 \
   themorgantown/ia-mirror:latest
 ```
 

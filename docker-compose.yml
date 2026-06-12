@@ -5,12 +5,17 @@ services:
       context: docker
       dockerfile: Dockerfile
     ports:
-      - "17865:17865"  # Web UI (http://localhost:17865)
+      # Web UI (http://localhost:17865), reachable only from this machine.
+      # Use "17865:17865" to allow access from other devices on your network.
+      - "127.0.0.1:17865:17865"
     volumes:
       - ${DOWNLOAD_DIR:-./downloads}:/downloads  # Media files — set DOWNLOAD_DIR in .env to change host path
       - ${DATA_DIR:-./data}:/data                # Database/Metadata
     environment:
       - DOWNLOAD_DIR=${DOWNLOAD_DIR:-./downloads}
+      # Bind inside the container so the published port works; host exposure
+      # is controlled by the `ports:` mapping above.
+      - WEB_HOST=${WEB_HOST:-0.0.0.0}
     env_file:
       # docker/example.env is a reference template only.
       # Put real overrides in docker/live.env; it is ignored if missing.
