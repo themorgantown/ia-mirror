@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -114,3 +114,45 @@ def test_batch_mode_inherits_env_dry_run_with_cli_args(monkeypatch, tmp_path):
     assert "--dry-run" in captured["cmd"]
     assert captured["cmd"][0] == sys.executable
     assert captured["env"]["IA_IS_CHILD"] == "1"
+
+
+def test_download_single_file_retries_on_failure(monkeypatch, tmp_path):
+    """download_single_file retries on ia_file.download() failure and succeeds on 3rd attempt."""
+    call_count = {"n": 0}
+
+    def fake_ia_download(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            return False
+        kwargs["fileobj"].write(b"data")
+        return True
+
+    mock_ia_file = MagicMock()
+    mock_ia_file.download.side_effect = fake_ia_download
+
+    mock_item = MagicMock()
+    mock_item.get_file.return_value = mock_ia_file
+
+    monkeypatch.setenv("IA_DOWNLOAD_RETRIES", "3")
+    monkeypatch.setenv("IA_RETRY_BACKOFF_BASE", "0")
+    fetcher._shutdown_event.clear()
+
+    with patch("fetcher.internetarchive.get_item", return_value=mock_item):
+        fname, ok = fetcher.download_single_file(
+            ia="ia",
+            identifier="test-item",
+            filename="test.txt",
+            destdir=tmp_path,
+            manifest_entry={"size": 4},
+            retries=1,
+            progress_timeout=30,
+            max_timeout=60,
+            verify_mode="none",
+            idx=0,
+            total=1,
+            max_mbps=0,
+            bucket=None,
+        )
+
+    assert ok is True, "Expected success after retries"
+    assert mock_ia_file.download.call_count == 3

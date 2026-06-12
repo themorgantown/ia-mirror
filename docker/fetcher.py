@@ -745,14 +745,17 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
 
     # For the library call, we still use a boolean for checksum
     do_checksum = (verify_mode == "checksum")
-    
+
+    _max_retries = int(os.getenv("IA_DOWNLOAD_RETRIES", "3"))
+    _backoff_base = float(os.getenv("IA_RETRY_BACKOFF_BASE", "5"))
+
     try:
         item = internetarchive.get_item(identifier, archive_session=get_archive_session())
         ia_file = item.get_file(filename)
-        
+
         # Use a temporary file for downloading to avoid partial files on failure
         tmp_path = local_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
-        
+
         def update_progress(current_size):
             _update_aggregate_bytes(tmp_path, current_size)
             if _json_output:
@@ -787,20 +790,39 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
                     self.last_update = now
                 return n
 
-        # Download using the internetarchive library
-        with open(tmp_path, 'wb') as f:
-            with ProgressThrottledFile(f, bucket, update_progress) as throttled_f:
-                # Note: internetarchive library uses requests internally.
-                # We pass timeout and params (for source).
-                # checksum=True in library will verify after download.
-                success = ia_file.download(
-                    fileobj=throttled_f,
-                    retries=retries,
-                    checksum=do_checksum,
-                    timeout=progress_timeout,
-                    params={'source': source} if source else None
-                )
-        
+        # Download using the internetarchive library, with per-file retry/backoff
+        for attempt in range(_max_retries + 1):
+            if _shutdown_event.is_set():
+                break
+            try:
+                with open(tmp_path, 'wb') as f:
+                    with ProgressThrottledFile(f, bucket, update_progress) as throttled_f:
+                        # Note: internetarchive library uses requests internally.
+                        # We pass timeout and params (for source).
+                        # checksum=True in library will verify after download.
+                        success = ia_file.download(
+                            fileobj=throttled_f,
+                            retries=retries,
+                            checksum=do_checksum,
+                            timeout=progress_timeout,
+                            params={'source': source} if source else None
+                        )
+            except Exception as dl_exc:
+                success = False
+                logging.warning("Download attempt %d/%d raised exception for %s: %s",
+                                attempt + 1, _max_retries + 1, filename, dl_exc)
+                _backoff_register_event(str(dl_exc))
+            if success:
+                break
+            if attempt < _max_retries and not _shutdown_event.is_set():
+                delay = _backoff_base * (2 ** attempt)
+                logging.warning("Download failed for %s (attempt %d/%d), retrying in %.0fs",
+                                filename, attempt + 1, _max_retries + 1, delay)
+                if tmp_path.exists():
+                    try: tmp_path.unlink()
+                    except: pass
+                _shutdown_event.wait(delay)
+
         if success:
             # Final progress update
             update_progress(tmp_path.stat().st_size)
@@ -817,7 +839,7 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
             logging.error("Download failed for %s", filename)
             if _json_output:
                  _print_json("file_end", {
-                    "filename": filename, 
+                    "filename": filename,
                     "status": "failed",
                     "error": "Download failed"
                 })
@@ -831,7 +853,7 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
         success = False
         if _json_output:
              _print_json("file_end", {
-                "filename": filename, 
+                "filename": filename,
                 "status": "failed",
                 "error": str(e)
             })
