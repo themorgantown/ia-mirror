@@ -1,57 +1,50 @@
-/* 1999 Design System - Dark Mode */
+/* ia-mirror Light Theme */
 :root {
-  /* Base Colors (Craigslist 1999 Dark Mode) */
-  --color-bg: #0A0A0A;        /* near-black, reminiscent of old terminal screens */
-  --color-surface: #1A1A1A;   /* slightly lighter for content areas */
-  --color-surface-hover: #222222; /* hover state */
-  --color-border: #333333;    /* dark gray */
+  --color-bg: #f0f0f0;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f7f7f7;
+  --color-border: #d0d0d0;
 
-  /* Text Colors */
-  --color-text-main: #F1F1F1; /* off-white, easy on eyes */
-  --color-text-muted: #C4C4C4; /* muted text */
-  --color-text-inverse: #0A0A0A; /* for text on light backgrounds */
+  --color-text-main: #1a1a1a;
+  --color-text-muted: #6b7280;
+  --color-text-inverse: #ffffff;
 
-  /* Links */
-  --color-link: #5C9EFF;      /* softer blue, maintains contrast */
-  --color-link-visited: #B28BFF; /* softer purple */
+  --color-link: #1d4ed8;
+  --color-link-visited: #7c3aed;
 
-  /* Accent */
-  --color-accent: #FF8C42;    /* softer orange - Craigslist accent */
-  --color-accent-hover: #FF7321; /* darker orange on hover */
+  --color-accent: #1d4ed8;
+  --color-accent-hover: #1e40af;
 
-  /* Semantic Colors */
-  --color-success: #00AA00;   /* green */
-  --color-success-hover: #008800; /* darker green */
-  --color-warning: #FFAA00;   /* amber */
-  --color-warning-hover: #DD9900; /* darker amber */
-  --color-error: #FF4444;     /* red */
-  --color-error-hover: #CC0000; /* darker red */
-  --color-info: #0088FF;      /* blue */
-  --color-info-hover: #0077DD; /* darker blue */
+  --color-success: #16a34a;
+  --color-success-hover: #15803d;
+  --color-warning: #d97706;
+  --color-warning-hover: #b45309;
+  --color-error: #dc2626;
+  --color-error-hover: #b91c1c;
+  --color-info: #2563eb;
+  --color-info-hover: #1d4ed8;
 
-  /* Shadows - Minimal or none for utilitarian design */
-  --shadow-sm: none;
-  --shadow-md: none;
-  --shadow-lg: none;
-  --shadow-soft: none;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.10);
+  --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.08);
 
-  /* Radius - Sharp corners for utilitarian design */
-  --radius-sm: 0;
-  --radius-md: 0;
-  --radius-lg: 0;
-  --radius-xl: 0;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
 
-  /* Bootstrap theme overrides */
-  --bs-primary: #FF8C42;
-  --bs-primary-rgb: 255, 140, 66;
-  --bs-secondary: #AAAAAA;
-  --bs-success: #00AA00;
-  --bs-info: #0088FF;
-  --bs-warning: #FFAA00;
-  --bs-danger: #FF4444;
-  --bs-light: #1A1A1A;
-  --bs-dark: #0A0A0A;
-  --bs-body-bg: #0A0A0A;
-  --bs-body-color: #F1F1F1;
-  --bs-border-color: #333333;
+  /* Bootstrap overrides */
+  --bs-primary: #1d4ed8;
+  --bs-primary-rgb: 29, 78, 216;
+  --bs-secondary: #6b7280;
+  --bs-success: #16a34a;
+  --bs-info: #2563eb;
+  --bs-warning: #d97706;
+  --bs-danger: #dc2626;
+  --bs-light: #f0f0f0;
+  --bs-dark: #1a1a1a;
+  --bs-body-bg: #f0f0f0;
+  --bs-body-color: #1a1a1a;
+  --bs-border-color: #d0d0d0;
 }
