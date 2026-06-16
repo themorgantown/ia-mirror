@@ -20,7 +20,6 @@ RUN apk upgrade --no-cache && \
     apk add --no-cache \
         bash \
         ca-certificates \
-        coreutils \
         shadow \
         su-exec \
         tini
