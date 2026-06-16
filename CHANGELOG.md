@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.2] - 2026-06-15
+
+### CI/CD
+- Bump `peter-evans/create-issue-from-file` from 5.0.1 to 6.0.0 in Docker Scout monitor workflow
+
+## [1.1.1] - 2026-06-15
+
+### Dependencies
+- Bump `internetarchive` 5.8.0 → 5.9.0
+- Bump `Flask-CORS` 6.0.2 → 6.0.5
+- Bump `python-socketio` 5.16.1 → 5.16.2
+- Bump `pytest` 9.0.3 → 9.1.0
+
 ## [1.1.0] - 2026-06-12
 
 ### Security
@@ -42,9 +55,38 @@
 
 ---
 
-## [1.0.3]
+## [1.0.3] - 2026-05-17
 
-Webui! It mirrors, downloads, syncs and resumes. Run `docker-compose.yml` and visit http://localhost:17865
+### Features
+- **Enhanced Recent Downloads panel**: default look-back window expanded from 7 → 30 days; panel now shows only `completed` jobs (not queued/running); job cards display identifier, file size, destination path, and completion date
+- **Switch to Alpine base image**: smaller Docker footprint, faster pulls
+
+### Fixed
+- `update_worker_state()` used `None` as a sentinel, making it impossible to explicitly clear the active job field; replaced with an `_UNSET` sentinel object
+- Fixed `isRunning` assignment on queue-add in the JS client
+- Fixed a null-guard missing on `percentEl` in the JS progress renderer
+- Missing newline at end of `Dockerfile`
+
+### Documentation
+- Expand README with a detailed feature comparison between ia-mirror and the base `internetarchive` library
+
+## [1.0.2] - 2026-05-15
+
+### Testing
+- **Test suite overhaul**: Replaced `test_ui.py`, `test_file_browser.py`, and `test_watcher.py` with structured new files — `test_fetcher.py`, `test_file_browser_api.py`, `test_watcher_service.py`, and `test_web_backend.py`; reworked `runtests.sh` for improved reliability
+- Add `tests/test_web_backend.py` with coverage for the recent downloads API endpoint
+
+### Developer Experience
+- Add `scripts/check_dependencies.py` — validates all runtime Python dependencies are importable and reports missing packages
+- Add `.vscode/tasks.json` with tasks for hadolint Dockerfile linting and Python syntax checking (`python -m py_compile`)
+- Add `docker/example.env` listing all supported environment variables with comments
+- Add `README_webui.md` with dedicated web UI documentation
+- Add `.DS_Store` to `.gitignore`
+
+### CI/CD
+- **Enhanced Docker Scout workflow**: CVE and recommendations output written to structured files; exit code 2 treated as "vulnerabilities found" rather than a hard failure; issue creation conditioned on `vulns_found` output; recommendations wrapped in fenced block with empty/null handling
+- Bump GitHub Actions versions across all workflows
+- Dockerfile: use `--no-install-recommends` for system package installs
 
 ## [0.4.0] - 2025-12-19
 
