@@ -21,7 +21,6 @@ RUN apk upgrade --no-cache && \
         bash \
         ca-certificates \
         coreutils \
-        curl \
         shadow \
         su-exec \
         tini
@@ -48,7 +47,7 @@ RUN mkdir -p /downloads /data && chown app:app /downloads /data
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:17865/api/status || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:17865/api/status', timeout=8)" 2>/dev/null || exit 1
 
 # Expose port
 EXPOSE 17865
