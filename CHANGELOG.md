@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Dependencies
+- Bump `internetarchive` 5.10.1 → 5.11.0 ([release notes](https://github.com/jjjake/internetarchive/releases/tag/v5.11.0)) — CI/tooling release; only breaking change is dropping Python 3.9 support (image runs Python 3.14, unaffected)
+- Sync stale `IA_PYPI_VERSION` build-arg references (Dockerfile, `release-buildx.yml`, README) from 5.8.0 to 5.11.0 to match the installed version
+
 ## [1.1.2] - 2026-06-15
 
 ### CI/CD
