@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.1.4] - 2026-08-03
+
+### Dependencies
+- Bump base image `python` 3.14.5-alpine3.23 → 3.14.6-alpine3.23
+- Bump `pip` 26.1.2 → 26.2
+- Bump `internetarchive` 5.9.0 → 5.11.0
+- Bump `python-socketio` 5.16.2 → 5.16.3
+- Bump `pytest` 9.1.0 → 9.1.1
+- Bump vendored `Bootstrap` 5.3.0 → 5.3.8 (`docker/static/vendor/`)
+
+### CI/CD
+- Bump `actions/checkout` 6.0.3 → 7.0.1 (runs on the Node 24 runner)
+- Bump `actions/setup-python` 6.2.0 → 6.3.0
+- Bump `docker/login-action` 4.2.0 → 4.6.0
+- Bump `docker/setup-qemu-action` 4.1.0 → 4.2.0
+- Bump `docker/setup-buildx-action` 4.1.0 → 4.2.0
+- Bump `docker/build-push-action` 7.2.0 → 7.3.0
+- Bump `hadolint/hadolint-action` 3.3.0 → 3.4.0
+- All actions remain pinned to immutable commit SHAs
+
+### Fixed
+- `VERSION` was stuck at 1.0.3 and `ARG PROJECT_VERSION` in `docker/Dockerfile` was stuck at 1.0.3 — both now track the released version, so the `org.opencontainers.image.version` label on default builds is no longer wrong
+- `ARG IA_PYPI_VERSION` in `docker/Dockerfile`, the `IA_PYPI_VERSION` build arg in `release-buildx.yml`, and the build example in the README were all pinned to 5.8.0 while `requirements.txt` had moved on — all now read 5.11.0
+
+## [1.1.3] - 2026-06-15
+
+### Fixed
+- Replace `curl` with a Python `urllib` call in the container `HEALTHCHECK` — the Alpine base image ships no `curl`, so the healthcheck was failing on every probe
+- Remove `coreutils` from the Dockerfile package list and pin `pip` in `requirements.txt`
+
 ## [1.1.2] - 2026-06-15
 
 ### CI/CD
