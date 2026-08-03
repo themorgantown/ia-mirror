@@ -23,6 +23,7 @@
 ### Fixed
 - `VERSION` was stuck at 1.0.3 and `ARG PROJECT_VERSION` in `docker/Dockerfile` was stuck at 1.0.3 — both now track the released version, so the `org.opencontainers.image.version` label on default builds is no longer wrong
 - `ARG IA_PYPI_VERSION` in `docker/Dockerfile`, the `IA_PYPI_VERSION` build arg in `release-buildx.yml`, and the build example in the README were all pinned to 5.8.0 while `requirements.txt` had moved on — all now read 5.11.0
+- Rewrite the `HEALTHCHECK` command in JSON exec form (`["sh", "-c", ...]`) — hadolint 3.4.0 promoted `DL3025` to a CI failure on the previous shell form. Behaviour is unchanged: the probe still exits 0 when the API answers and 1 when it does not
 
 ## [1.1.3] - 2026-06-15
 
