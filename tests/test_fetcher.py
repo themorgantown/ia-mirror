@@ -156,3 +156,64 @@ def test_download_single_file_retries_on_failure(monkeypatch, tmp_path):
 
     assert ok is True, "Expected success after retries"
     assert mock_ia_file.download.call_count == 3
+
+
+def _parse_mirror(argv):
+    """Parse argv with the real parser and return (args, dests supplied on the CLI)."""
+    parser, mirror_parser = fetcher.build_parser()
+    return parser.parse_args(argv), fetcher.cli_supplied_dests(mirror_parser, argv)
+
+
+def test_env_flag_does_not_override_explicit_cli_choice(monkeypatch):
+    """An env switch must not overrule an option the caller stated outright.
+
+    Env vars are only defaults. IA_GLOB previously fought with an explicit --glob,
+    and the boolean switches were applied unconditionally, so a caller had no way to
+    opt out of a mode a stale env var had turned on.
+    """
+    monkeypatch.setenv("IA_GLOB", "*.zip")
+    monkeypatch.setenv("IA_CONCURRENCY", "8")
+
+    args, supplied = _parse_mirror(["mirror", "an-item", "--glob", "*", "--concurrency", "2"])
+    fetcher.apply_env_defaults(args, supplied)
+
+    assert args.glob == ["*"], "explicit --glob must win over IA_GLOB"
+    assert args.concurrency == 2, "explicit --concurrency must win over IA_CONCURRENCY"
+
+
+def test_env_flag_still_seeds_options_the_caller_omitted(monkeypatch):
+    """Env defaults stay useful for CLI mode: they fill in what was not passed."""
+    monkeypatch.setenv("IA_COLLECTION", "1")
+    monkeypatch.setenv("IA_CONCURRENCY", "8")
+    monkeypatch.setenv("IA_GLOB", "*.zip")
+
+    args, supplied = _parse_mirror(["mirror", "an-item"])
+    fetcher.apply_env_defaults(args, supplied)
+
+    assert args.collection is True
+    assert args.concurrency == 8
+    assert args.glob == ["*.zip"]
+
+
+def test_explicit_bool_flag_is_not_reapplied_from_env(monkeypatch):
+    """--resumefolders passed explicitly stays on; the env var is not what decided it."""
+    monkeypatch.setenv("IA_RESUMEFOLDERS", "1")
+
+    args, supplied = _parse_mirror(["mirror", "an-item", "--resumefolders"])
+    fetcher.apply_env_defaults(args, supplied)
+
+    assert "resumefolders" in supplied
+    assert args.resumefolders is True
+
+
+def test_cli_supplied_dests_maps_real_option_strings():
+    """Guards the option->dest mapping the precedence rules depend on."""
+    _, mirror_parser = fetcher.build_parser()
+
+    supplied = fetcher.cli_supplied_dests(
+        mirror_parser,
+        ["mirror", "an-item", "--glob", "*", "-j", "2", "--dry-run", "--format=mp3"],
+    )
+
+    assert {"glob", "concurrency", "dry_run", "formats"} <= supplied
+    assert "collection" not in supplied

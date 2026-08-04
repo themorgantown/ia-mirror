@@ -973,10 +973,38 @@ def _split_env_multi_value(value: str) -> List[str]:
     return [part for part in (segment.strip() for segment in value.replace(" ", ",").split(",")) if part]
 
 
-def apply_env_defaults(args) -> None:
-    """Apply env-backed defaults even when some CLI args are already present."""
+def cli_supplied_dests(parser, argv: List[str]) -> set:
+    """Return the argparse dests that were explicitly given on the command line.
+
+    Env vars are only meant to supply *defaults*. Without this, an env flag such as
+    IA_RESUMEFOLDERS=1 would silently re-enable itself on a caller that never asked
+    for it, and no CLI argument could turn it back off.
+    """
+    option_to_dest = {}
+    for action in parser._actions:
+        for option in action.option_strings:
+            option_to_dest[option] = action.dest
+
+    supplied = set()
+    for token in argv:
+        if not token.startswith("-") or token == "-":
+            continue
+        dest = option_to_dest.get(token.split("=", 1)[0])
+        if dest:
+            supplied.add(dest)
+    return supplied
+
+
+def apply_env_defaults(args, supplied: set|None = None) -> None:
+    """Apply env-backed defaults for options the command line did not set.
+
+    `supplied` is the set of dests the caller passed explicitly; those always win,
+    so env vars can seed a default but can never override an explicit choice.
+    """
     if getattr(args, "command", None) != "mirror":
         return
+
+    supplied = supplied or set()
 
     bool_env_map = {
         "IA_CHECKSUM": "checksum",
@@ -995,6 +1023,8 @@ def apply_env_defaults(args) -> None:
         "IA_SYNC": "sync",
     }
     for env_name, attr_name in bool_env_map.items():
+        if attr_name in supplied:
+            continue
         if _env_flag_enabled(env_name):
             setattr(args, attr_name, True)
 
@@ -1002,17 +1032,17 @@ def apply_env_defaults(args) -> None:
     if env_identifier and not getattr(args, "identifier", None):
         args.identifier = env_identifier
 
-    if not args.glob:
+    if not args.glob and "glob" not in supplied:
         env_glob = os.getenv("IA_GLOB")
         if env_glob:
             args.glob = _split_env_multi_value(env_glob)
 
-    if not args.exclude:
+    if not args.exclude and "exclude" not in supplied:
         env_exclude = os.getenv("IA_EXCLUDE")
         if env_exclude:
             args.exclude = _split_env_multi_value(env_exclude)
 
-    if not args.formats:
+    if not args.formats and "formats" not in supplied:
         env_format = os.getenv("IA_FORMAT")
         if env_format:
             args.formats = _split_env_multi_value(env_format)
@@ -1040,6 +1070,8 @@ def apply_env_defaults(args) -> None:
     for env_name, attr_name, default_value, cast in value_env_map:
         env_value = os.getenv(env_name)
         if not env_value:
+            continue
+        if attr_name in supplied:
             continue
         current_value = getattr(args, attr_name, None)
         if current_value not in (None, default_value):
@@ -1175,28 +1207,12 @@ def handle_watch_command(args):
         print(f"Unknown watch subcommand: {args.watch_subcommand}")
         sys.exit(1)
 
-def main():
+def build_parser():
+    """Construct the argument parser.
 
-    inject_env_args()
-    
-    # Health check server initialization
-    is_child = os.environ.get("IA_IS_CHILD") == "1"
-    health_port = int(os.environ.get("IA_HEALTH_PORT", "8080"))
-    health_server = None
-    if not is_child and health_port > 0:
-        health_server = HealthCheckServer(health_port)
-        health_server.start()
-        atexit.register(health_server.stop)
-
-    # Normalize argv for backward compatibility: if first argument is not a known subcommand, insert "mirror"
-    import sys
-    KNOWN_SUBCOMMANDS = {"mirror", "watch", "batch", "advanced", "help"}
-    if len(sys.argv) == 1:
-        sys.argv.append("mirror")
-    elif len(sys.argv) > 1 and sys.argv[1] not in KNOWN_SUBCOMMANDS:
-        # Insert "mirror" subcommand before the identifier
-        sys.argv.insert(1, "mirror")
-
+    Split out of main() so tests can exercise the real options and dests rather
+    than a hand-rolled copy that silently drifts out of sync.
+    """
     ap = argparse.ArgumentParser(description="Parallel IA downloader with resume + mirror", add_help=False)
     ap.add_argument("--help", action="store_true", help="Show basic help")
     ap.add_argument("--help-advanced", action="store_true", help="Show advanced options")
@@ -1284,6 +1300,33 @@ def main():
     # Advanced command (show advanced usage)
     advanced_cmd_parser = subparsers.add_parser("advanced", help="Show advanced usage information")
 
+    return ap, mirror_parser
+
+
+def main():
+
+    inject_env_args()
+    
+    # Health check server initialization
+    is_child = os.environ.get("IA_IS_CHILD") == "1"
+    health_port = int(os.environ.get("IA_HEALTH_PORT", "8080"))
+    health_server = None
+    if not is_child and health_port > 0:
+        health_server = HealthCheckServer(health_port)
+        health_server.start()
+        atexit.register(health_server.stop)
+
+    # Normalize argv for backward compatibility: if first argument is not a known subcommand, insert "mirror"
+    import sys
+    KNOWN_SUBCOMMANDS = {"mirror", "watch", "batch", "advanced", "help"}
+    if len(sys.argv) == 1:
+        sys.argv.append("mirror")
+    elif len(sys.argv) > 1 and sys.argv[1] not in KNOWN_SUBCOMMANDS:
+        # Insert "mirror" subcommand before the identifier
+        sys.argv.insert(1, "mirror")
+
+    ap, mirror_parser = build_parser()
+
     # Parse arguments
     args = ap.parse_args()
 
@@ -1325,7 +1368,7 @@ def main():
         print(f"Unknown command: {args.command}")
         sys.exit(1)
 
-    apply_env_defaults(args)
+    apply_env_defaults(args, cli_supplied_dests(mirror_parser, sys.argv[1:]))
 
     # Resolve verify mode
     if not args.verify_mode:

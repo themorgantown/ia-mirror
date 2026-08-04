@@ -214,6 +214,65 @@ class TestJobRunner:
         assert "--checksum" in command
         assert "--json-output" in command
 
+    def test_job_env_cannot_reconfigure_the_job(self, monkeypatch):
+        """A stale CLI-mode env var must not rewrite a job the UI queued.
+
+        IA_RESUMEFOLDERS=1 left over from a CLI run used to force every Web UI
+        download into resumefolders mode, which only ever matches *.zip. An item
+        with no zip files then failed with "No matching files" and exit code 1,
+        despite the job config asking for glob '*'.
+        """
+        monkeypatch.setenv("IA_RESUMEFOLDERS", "1")
+        monkeypatch.setenv("IA_COLLECTION", "1")
+        monkeypatch.setenv("IA_GLOB", "*.zip")
+        monkeypatch.setenv("IA_IDENTIFIER", "some-other-item")
+
+        runner = RealJobRunner(1, "test-item", "/tmp", {"glob_pattern": "*"})
+
+        with patch("subprocess.Popen") as mock_popen:
+            mock_process = MagicMock()
+            mock_process.stdout = []
+            mock_process.wait.return_value = 0
+            mock_process.returncode = 0
+            mock_popen.return_value = mock_process
+
+            runner.run(lambda _line: None, lambda _progress: None)
+
+        child_env = mock_popen.call_args.kwargs["env"]
+        for leaked in ("IA_RESUMEFOLDERS", "IA_COLLECTION", "IA_GLOB", "IA_IDENTIFIER"):
+            assert leaked not in child_env, f"{leaked} must not reach the fetcher subprocess"
+
+        command = mock_popen.call_args.args[0]
+        assert "--resumefolders" not in command
+        assert "--collection" not in command
+        assert command[command.index("--glob") + 1] == "*"
+
+    def test_job_env_keeps_credentials_and_tuning(self, monkeypatch):
+        """Stripping job config must not strip what the job still needs to run."""
+        monkeypatch.setenv("IA_ACCESS_KEY", "key-abc")
+        monkeypatch.setenv("IA_SECRET_KEY", "secret-xyz")
+        monkeypatch.setenv("IA_LOG_LEVEL", "DEBUG")
+        monkeypatch.setenv("IA_DOWNLOAD_RETRIES", "7")
+        monkeypatch.setenv("IA_BACKOFF_BASE", "3")
+
+        runner = RealJobRunner(1, "test-item", "/tmp", {})
+
+        with patch("subprocess.Popen") as mock_popen:
+            mock_process = MagicMock()
+            mock_process.stdout = []
+            mock_process.wait.return_value = 0
+            mock_process.returncode = 0
+            mock_popen.return_value = mock_process
+
+            runner.run(lambda _line: None, lambda _progress: None)
+
+        child_env = mock_popen.call_args.kwargs["env"]
+        assert child_env["IA_ACCESS_KEY"] == "key-abc"
+        assert child_env["IA_SECRET_KEY"] == "secret-xyz"
+        assert child_env["IA_LOG_LEVEL"] == "DEBUG"
+        assert child_env["IA_DOWNLOAD_RETRIES"] == "7"
+        assert child_env["IA_BACKOFF_BASE"] == "3"
+
 
 class TestQueueWorker:
     @pytest.fixture

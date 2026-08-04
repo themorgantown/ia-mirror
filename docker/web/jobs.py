@@ -9,6 +9,42 @@ from typing import Optional, Callable, Dict
 from pathlib import Path
 
 
+# Env vars that describe *what a job does*. In Web UI mode the job's own config is
+# the only source of truth, so these must not reach the fetcher subprocess: they are
+# CLI-mode settings, and fetcher.py treats several of them as one-way switches that
+# no CLI argument can turn back off. Leaving them in place lets a stale value in
+# live.env silently rewrite every queued job (e.g. IA_RESUMEFOLDERS=1 restricting an
+# ordinary download to *.zip, so an item with no zips fails with "No matching files").
+#
+# Credentials and operational tuning the UI does not expose (IA_ACCESS_KEY,
+# IA_SECRET_KEY, IA_LOG_LEVEL, IA_DOWNLOAD_RETRIES, IA_BACKOFF_*, timeouts, ...)
+# are deliberately left alone and still pass through.
+JOB_CONFIG_ENV_VARS = frozenset({
+    # Boolean mode switches
+    'IA_CHECKSUM', 'IA_DRY_RUN', 'IA_RESUMEFOLDERS', 'IA_VERIFY_ONLY',
+    'IA_ESTIMATE_ONLY', 'IA_COLLECTION', 'IA_NO_LOCK', 'IA_NO_BACKOFF',
+    'IA_USE_BATCH_SOURCE', 'IA_ON_THE_FLY', 'IA_XML_NAMES', 'IA_IGNORE_EXISTING',
+    'IA_NO_DIRECTORIES', 'IA_SYNC',
+    # Target and scope
+    'IA_IDENTIFIER', 'IA_ITEM_NAME', 'IA_GLOB', 'IA_EXCLUDE', 'IA_FORMAT',
+    'IA_SOURCE', 'IA_DESTDIR',
+    # Values the UI sets on every job
+    'IA_CONCURRENCY', 'IA_RETRIES', 'IA_VERIFY_MODE', 'IA_MAX_MBPS', 'IA_MAX_Mbps',
+    'IA_ASSUMED_MBPS', 'IA_ASSUMED_Mbps', 'IA_COST_PER_GB',
+})
+
+
+def build_job_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Copy the environment with job-configuring IA_* vars removed.
+
+    See JOB_CONFIG_ENV_VARS for why. Credentials and tuning survive.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    for name in JOB_CONFIG_ENV_VARS:
+        env.pop(name, None)
+    return env
+
+
 class JobRunner:
     """Base class for job runners."""
     
@@ -73,12 +109,13 @@ class RealJobRunner(JobRunner):
         """Run fetcher.py with the configuration."""
         # Guardrail: refuse to run if placeholder identifier is still set
         if self.identifier == 'example_item':
-            on_log("Configuration error: IA_IDENTIFIER is set to 'example_item'. Please set a real identifier in docker-compose.yml or env.")
+            on_log("Configuration error: 'example_item' is placeholder text, not a real archive.org identifier. Queue a real item ID or archive.org/details/ URL.")
             return 2
-        # Build environment with configuration
-        # Build environment - mostly for passthrough credentials, but arguments are now passed via CLI
-        env = os.environ.copy()
-        
+        # Build environment - passthrough for credentials and tuning only. Job settings
+        # travel as explicit CLI arguments below, so any IA_* var that would re-configure
+        # the job is stripped first.
+        env = build_job_env()
+
         # Spawn fetcher.py subprocess with explicit CLI arguments
         cmd = ['python', '/app/fetcher.py', '--json-output', self.identifier]
         
