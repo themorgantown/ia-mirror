@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.15] - 2026-08-3
+
+### Fixed
+- **Web UI jobs were silently rewritten by leftover CLI environment variables.** `fetcher.py` applied `IA_*` settings on top of arguments it had already been given, and the boolean switches were one-way — nothing on the command line could turn one back off. A stale `IA_RESUMEFOLDERS=1` in `docker/live.env` therefore forced every queued download into resumefolders mode, which only ever matches `*.zip`; any item without a zip failed with `❌ No matching files.` and exit code 1 while the UI showed the job's glob as `*`. `IA_COLLECTION=1` leaked the same way, sending single items down the collection lookup path first.
+- Job-configuring `IA_*` variables are now stripped from the fetcher subprocess in Web UI mode (`web/jobs.py`, `JOB_CONFIG_ENV_VARS`). A job's own config is the only thing that describes it. Credentials and operational tuning the UI does not expose (`IA_ACCESS_KEY`, `IA_SECRET_KEY`, `IA_LOG_LEVEL`, `IA_DOWNLOAD_RETRIES`, `IA_BACKOFF_*`, timeouts) still pass through.
+- On the command line, `IA_*` variables are now strictly *defaults*: an explicitly passed argument always wins (`--glob '*'` beats `IA_GLOB=*.zip`). Options left unspecified are still seeded from the environment, so existing CLI setups behave as before.
+- Correct the placeholder-identifier error message, which told Web UI users to edit `IA_IDENTIFIER` in `docker-compose.yml` — a variable that no longer affects their jobs.
+
+### Changed
+- Extract `build_parser()` out of `main()` in `fetcher.py` so tests exercise the real options and dests instead of a hand-maintained copy.
+- `docker/example.env` marks the download-settings block CLI-mode-only; it previously advertised that those values "can also seed Web UI job defaults", which is exactly the behaviour that caused the bug.
+- README documents that Web UI jobs ignore `IA_*` job settings, and that explicit CLI arguments beat the environment.
+
 ## [1.1.4] - 2026-08-03
 
 ### Dependencies

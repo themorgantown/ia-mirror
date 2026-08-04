@@ -117,7 +117,7 @@ When `IA_DESTDIR=/downloads`, downloaded files land in `/downloads/<identifier>/
 1. Start the stack: `docker compose up -d`
 2. Open http://localhost:17865
 3. Optional: choose a download folder — see below
-4. Optional: copy the template with `cp docker/example.env docker/live.env` and edit it with credentials, Web UI defaults, or CLI-mode settings
+4. Optional: copy the template with `cp docker/example.env docker/live.env` and add your archive.org credentials. Job settings belong in the UI, not this file — see [Key Environment Variables](#key-environment-variables)
 
 By default the Web UI is published on `127.0.0.1` and only reachable from the machine running Docker. To allow access from other devices on your network, change the `ports:` entry in `docker-compose.yml` from `"127.0.0.1:17865:17865"` to `"17865:17865"`.
 
@@ -323,6 +323,14 @@ See [docker/example.env](docker/example.env) for the full template.
 | `WEB_CORS_ORIGINS` | unset | Optional comma-separated allowed origins for separate frontends; leave unset for same-origin Web UI use |
 
 ### Fetcher / CLI
+
+**These apply to CLI mode only.** Web UI jobs ignore them: every job carries its own
+settings, chosen in the browser or posted to `/api/queue/add`, and defaults for new jobs
+live in Settings (`/api/config`). Leaving job settings in `docker/live.env` on a Web UI
+container has no effect on queued jobs — put credentials there and configure jobs in the app.
+
+On the command line these variables supply *defaults*. An explicit argument always wins,
+so `--glob '*'` overrides `IA_GLOB=*.zip`.
 
 | Variable | Default | Notes |
 |----------|---------|-------|
