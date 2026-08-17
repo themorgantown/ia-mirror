@@ -1,6 +1,21 @@
 # Changelog
 
-## [1.1.15] - 2026-08-3
+## [1.1.7] - 2026-08-16
+
+### Security
+- Bump base image `python` 3.14.6-alpine3.23 → 3.14.6-alpine3.24. Alpine 3.23 ships `sqlite-libs` 3.51.2-r0, which has no fixed release for CVE-2026-11822 and CVE-2026-11824 (both High, reported by Docker Scout in #43 and #49). Alpine 3.24 ships 3.53.2-r0, above the `<=3.51.2-r0` affected range for both. Docker Scout rates the 3.24 base at 0 critical / 0 high / 0 medium / 0 low.
+- Remove `pip` and `ensurepip` from the final image. After the sqlite fix, pip's vendored dependency SBOM (`pip/_vendor/bom.cdx.json`, declaring msgpack 1.1.2 and setuptools 70.3.0) was the only remaining source of High findings — CVE-2026-57585 / GHSA-6v7p-g79w-8964 and CVE-2025-47273. pip 26.2.1 still vendors both, so there is no version to upgrade to. Nothing at runtime imports pip, so it is uninstalled after `requirements.txt` is installed. The published image now scans 0C / 0H / 0M / 0L and is 35 MB instead of 42 MB.
+  - Consequence: `pip install` no longer works inside a running container. Add packages to `docker/requirements.txt` and rebuild.
+
+### Dependencies
+- Bump `pip` 26.2 → 26.2.1 and `python-socketio` 5.16.3 → 5.16.4 (automated biweekly update, commit 58437f4 — landed on `main` unreleased)
+
+### Fixed
+- `VERSION` and `ARG PROJECT_VERSION` in `docker/Dockerfile` were left at 1.1.4 through the v1.1.5 and v1.1.6 tags, so the `org.opencontainers.image.version` label on those images was wrong. Both now read 1.1.7.
+- The Web UI integration test (`tests/runtests.sh`) never actually ran. It published the container port but did not pass `WEB_HOST=0.0.0.0`, so Gunicorn stayed bound to the container's loopback and every request from the host timed out — the whole test reported as "Container failed to start".
+- With that fixed, the same test exposed a race: it waited for `queue_length` to reach 0 before checking job history, but a job leaves the queue when it *starts* running, not when it finishes. It now polls `/api/jobs` for a terminal (`completed`/`failed`) status.
+
+## [1.1.16] - 2026-08-3
 
 ### Fixed
 - **Web UI jobs were silently rewritten by leftover CLI environment variables.** `fetcher.py` applied `IA_*` settings on top of arguments it had already been given, and the boolean switches were one-way — nothing on the command line could turn one back off. A stale `IA_RESUMEFOLDERS=1` in `docker/live.env` therefore forced every queued download into resumefolders mode, which only ever matches `*.zip`; any item without a zip failed with `❌ No matching files.` and exit code 1 while the UI showed the job's glob as `*`. `IA_COLLECTION=1` leaked the same way, sending single items down the collection lookup path first.

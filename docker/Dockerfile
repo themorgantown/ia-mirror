@@ -1,7 +1,7 @@
 # Production image for ia-mirror
 ARG IA_PYPI_VERSION="5.11.0"
-ARG PROJECT_VERSION="1.1.4"
-FROM python:3.14.6-alpine3.23 AS base
+ARG PROJECT_VERSION="1.1.7"
+FROM python:3.14.6-alpine3.24 AS base
 ARG IA_PYPI_VERSION
 ARG PROJECT_VERSION
 
@@ -30,7 +30,13 @@ WORKDIR /app
 
 # Copy and install Python dependencies
 COPY requirements.txt /app/
-RUN python -m pip install --no-cache-dir -r requirements.txt
+# pip is removed afterwards: nothing at runtime uses it, and its vendored
+# dependency SBOM (pip/_vendor/bom.cdx.json) is the only source of High CVEs
+# left in the image.
+RUN python -m pip install --no-cache-dir -r requirements.txt && \
+    STDLIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])')" && \
+    python -m pip uninstall -y pip && \
+    rm -rf "${STDLIB}/ensurepip"
 
 # Copy application code
 COPY fetcher.py entrypoint.sh /app/

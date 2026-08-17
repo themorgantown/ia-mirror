@@ -663,6 +663,7 @@ run_web_ui_integration_test() {
         -p "$TEST_PORT:17865" \
         -v "$OUTPUT_DIR_HOST:/downloads" \
         -e WEB_ENABLED=true \
+        -e WEB_HOST=0.0.0.0 \
         -e WEB_PORT=17865 \
         -e WEB_RUNNER=mock \
         "$IMAGE" > "$OUTPUT_DIR/$ID.start.log" 2>&1
@@ -741,12 +742,15 @@ run_web_ui_integration_test() {
         FAILED=1
     fi
 
-    local COMPLETED=0 JOBS HISTORY_COUNT
+    # Wait on the job reaching a terminal state, not on queue_length. A job
+    # leaves the queue the moment it starts running, so queue_length hits 0
+    # while the run is still in flight.
+    local COMPLETED=0 JOBS HISTORY_COUNT=0
     for _ in {1..60}; do
         sleep 1
-        STATUS=$(curl -s "http://localhost:$TEST_PORT/api/status")
-        QUEUE_LEN=$(echo "$STATUS" | "$PYTHON_BIN" -c "import sys, json; print(json.load(sys.stdin).get('queue_length', 0))" 2>/dev/null || echo 0)
-        if [ "$QUEUE_LEN" -eq 0 ]; then
+        JOBS=$(curl -s "http://localhost:$TEST_PORT/api/jobs")
+        HISTORY_COUNT=$(echo "$JOBS" | "$PYTHON_BIN" -c "import sys, json; print(len([j for j in json.load(sys.stdin)['jobs'] if j['status'] in ['completed', 'failed']]))" 2>/dev/null || echo 0)
+        if [ "$HISTORY_COUNT" -gt 0 ]; then
             COMPLETED=1
             break
         fi
@@ -755,9 +759,6 @@ run_web_ui_integration_test() {
         echo "FAIL: Jobs did not complete in time" >> "$LOG"
         FAILED=1
     fi
-
-    JOBS=$(curl -s "http://localhost:$TEST_PORT/api/jobs")
-    HISTORY_COUNT=$(echo "$JOBS" | "$PYTHON_BIN" -c "import sys, json; print(len([j for j in json.load(sys.stdin)['jobs'] if j['status'] in ['completed', 'failed']]))" 2>/dev/null || echo 0)
     if [ "$HISTORY_COUNT" -eq 0 ]; then
         echo "FAIL: No completed jobs in history" >> "$LOG"
         FAILED=1
