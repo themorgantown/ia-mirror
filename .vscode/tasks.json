@@ -2,7 +2,8 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Build ia-mirror image",
+			"label": "Build image",
+			"detail": "Build ia-mirror:local from docker/Dockerfile",
 			"type": "shell",
 			"command": "docker",
 			"args": [
@@ -23,7 +24,30 @@
 			"problemMatcher": []
 		},
 		{
-			"label": "Run ia-mirror and open Web UI",
+			"label": "Build image (no cache)",
+			"detail": "Fresh build. Required before a Scout scan: the apk upgrade layer caches, so a cached build reports OS CVEs that are already fixed upstream.",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"build",
+				"--no-cache",
+				"--pull",
+				"-f",
+				"docker/Dockerfile",
+				"-t",
+				"ia-mirror:local",
+				"docker"
+			],
+			"group": "build",
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared"
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "Run Web UI",
+			"detail": "docker-compose up, then open http://localhost:17865",
 			"type": "shell",
 			"command": "sh",
 			"args": [
@@ -41,23 +65,8 @@
 			}
 		},
 		{
-			"label": "Syntax check ia-mirror Python",
-			"type": "shell",
-			"command": "python",
-			"args": [
-				"-m",
-				"py_compile",
-				"docker/fetcher.py",
-				"docker/web/app.py",
-				"docker/web/routes.py",
-				"docker/web/jobs.py"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "Syntax check ia-mirror Python 3",
+			"label": "Syntax check Python",
+			"detail": "py_compile every Python entry point",
 			"type": "shell",
 			"command": "python3",
 			"args": [
@@ -66,53 +75,28 @@
 				"docker/fetcher.py",
 				"docker/web/app.py",
 				"docker/web/routes.py",
-				"docker/web/jobs.py"
+				"docker/web/jobs.py",
+				"scripts/check_dependencies.py"
 			],
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "build"
 		},
 		{
-			"label": "Run backend unit tests",
+			"label": "Lint Dockerfile (hadolint)",
 			"type": "shell",
-			"command": "python3",
+			"command": "sh",
 			"args": [
-				"-m",
-				"pytest",
-				"tests/test_web_backend.py",
-				"tests/test_file_browser_api.py",
-				"tests/test_watcher_service.py"
+				"-c",
+				"docker run --rm -i hadolint/hadolint hadolint --ignore DL3008 - < docker/Dockerfile && echo 'hadolint: no findings'"
 			],
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
 		},
 		{
-			"label": "Run containerized backend tests",
-			"type": "shell",
-			"command": "docker",
-			"args": [
-				"run",
-				"--rm",
-				"--entrypoint",
-				"python",
-				"-v",
-				"${workspaceFolder}/tests:/app/tests:ro",
-				"-w",
-				"/app",
-				"ia-mirror:local",
-				"-m",
-				"pytest",
-				"tests/test_web_backend.py",
-				"tests/test_file_browser_api.py",
-				"tests/test_watcher_service.py"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "test"
-		},
-		{
-			"label": "Run pip audit on requirements.txt",
+			"label": "Audit dependencies (pip-audit)",
+			"detail": "pip was removed from the image in v1.1.7, so this audits requirements.txt from an isolated host venv, matching ci.yml.",
 			"type": "shell",
 			"command": "sh",
 			"args": [
@@ -124,111 +108,8 @@
 			"group": "test"
 		},
 		{
-			"label": "Run containerized backend tests after schema fix",
-			"type": "shell",
-			"command": "docker",
-			"args": [
-				"run",
-				"--rm",
-				"--entrypoint",
-				"python",
-				"-v",
-				"${workspaceFolder}/tests:/app/tests:ro",
-				"-w",
-				"/app",
-				"ia-mirror:local",
-				"-m",
-				"pytest",
-				"tests/test_web_backend.py",
-				"tests/test_file_browser_api.py",
-				"tests/test_watcher_service.py"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "test"
-		},
-		{
-			"label": "Run containerized backend tests final",
-			"type": "shell",
-			"command": "docker",
-			"args": [
-				"run",
-				"--rm",
-				"--entrypoint",
-				"python",
-				"-v",
-				"${workspaceFolder}/tests:/app/tests:ro",
-				"-w",
-				"/app",
-				"ia-mirror:local",
-				"-m",
-				"pytest",
-				"tests/test_web_backend.py",
-				"tests/test_file_browser_api.py",
-				"tests/test_watcher_service.py"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "test"
-		},
-		{
-			"label": "Run full ia-mirror test suite",
-			"type": "shell",
-			"command": "./tests/runtests.sh",
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "test"
-		},
-		{
-			"label": "Run full ia-mirror test suite final",
-			"type": "shell",
-			"command": "./tests/runtests.sh",
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "test"
-		},
-		{
-			"label": "Run full ia-mirror test suite clean",
-			"type": "shell",
-			"command": "./tests/runtests.sh",
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "test"
-		},
-		{
-			"label": "Run targeted pytest after batch dry-run fix",
-			"type": "shell",
-			"command": "docker",
-			"args": [
-				"run",
-				"--rm",
-				"--entrypoint",
-				"",
-				"-v",
-				"${workspaceFolder}/tests:/app/tests",
-				"-w",
-				"/app",
-				"ia-mirror:local",
-				"pytest",
-				"/app/tests/test_fetcher.py",
-				"/app/tests/test_web_backend.py",
-				"/app/tests/test_watcher_service.py",
-				"/app/tests/test_file_browser_api.py"
-			],
-			"isBackground": false
-		},
-		{
-			"label": "Run targeted pytest in container",
-			"type": "shell",
-			"command": "sh",
-			"args": [
-				"-c",
-				"docker run --rm --entrypoint '' -v '${workspaceFolder}/tests:/app/tests' -w /app ia-mirror:local pytest /app/tests/test_fetcher.py /app/tests/test_web_backend.py /app/tests/test_watcher_service.py /app/tests/test_file_browser_api.py"
-			],
-			"isBackground": false
-		},
-		{
-			"label": "Run targeted pytest via shell entrypoint",
+			"label": "Run unit tests (container)",
+			"detail": "Canonical test path. Running these against the host Python fails on macOS: the fixtures assume Linux paths and no /var -> /private/var symlink.",
 			"type": "shell",
 			"command": "docker",
 			"args": [
@@ -237,102 +118,32 @@
 				"--entrypoint",
 				"/bin/sh",
 				"-v",
-				"${workspaceFolder}/tests:/app/tests",
+				"${workspaceFolder}/tests:/app/tests:ro",
 				"-w",
 				"/app",
 				"ia-mirror:local",
 				"-lc",
-				"pytest /app/tests/test_fetcher.py /app/tests/test_web_backend.py /app/tests/test_watcher_service.py /app/tests/test_file_browser_api.py"
+				"pytest tests/test_fetcher.py tests/test_web_backend.py tests/test_watcher_service.py tests/test_file_browser_api.py -q"
 			],
-			"isBackground": false
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": {
+				"kind": "test",
+				"isDefault": true
+			}
 		},
 		{
-			"label": "Rerun targeted pytest via shell entrypoint",
-			"type": "shell",
-			"command": "docker",
-			"args": [
-				"run",
-				"--rm",
-				"--entrypoint",
-				"/bin/sh",
-				"-v",
-				"${workspaceFolder}/tests:/app/tests",
-				"-w",
-				"/app",
-				"ia-mirror:local",
-				"-lc",
-				"pytest /app/tests/test_fetcher.py /app/tests/test_web_backend.py /app/tests/test_watcher_service.py /app/tests/test_file_browser_api.py"
-			],
-			"isBackground": false
-		},
-		{
-			"label": "Run full integration suite after batch env fix",
+			"label": "Run integration suite",
+			"detail": "./tests/runtests.sh — builds its own test image and performs real downloads",
 			"type": "shell",
 			"command": "./tests/runtests.sh",
-			"isBackground": false
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
 		},
 		{
-			"label": "Run full integration suite with result backfill",
-			"type": "shell",
-			"command": "./tests/runtests.sh",
-			"isBackground": false
-		},
-		{
-			"label": "Final full integration suite",
-			"type": "shell",
-			"command": "./tests/runtests.sh",
-			"isBackground": false
-		},
-		{
-			"label": "Syntax check dependency script",
-			"type": "shell",
-			"command": "python3",
-			"args": [
-				"-m",
-				"py_compile",
-				"scripts/check_dependencies.py"
-			],
-			"isBackground": false
-		},
-		{
-			"label": "Validate hadolint Dockerfile",
-			"type": "shell",
-			"command": "docker",
-			"args": [
-				"run",
-				"--rm",
-				"-i",
-				"hadolint/hadolint",
-				"hadolint",
-				"--ignore",
-				"DL3008",
-				"-"
-			],
-			"isBackground": false
-		},
-		{
-			"label": "Validate fetcher syntax",
-			"type": "shell",
-			"command": "python3",
-			"args": [
-				"-m",
-				"py_compile",
-				"docker/fetcher.py"
-			],
-			"isBackground": false
-		},
-		{
-			"label": "Validate hadolint Dockerfile piped",
-			"type": "shell",
-			"command": "sh",
-			"args": [
-				"-c",
-				"docker run --rm -i hadolint/hadolint hadolint --ignore DL3008 - < docker/Dockerfile"
-			],
-			"isBackground": false
-		},
-		{
-			"label": "Smoke test Alpine image",
+			"label": "Smoke test image",
+			"detail": "WEB_ENABLED=false is required: entrypoint.sh defaults it to true, and in that mode it execs Gunicorn and discards the CLI arguments, so the task would hang forever.",
 			"type": "shell",
 			"command": "docker",
 			"args": [
@@ -343,24 +154,38 @@
 				"ia-mirror:local",
 				"--print-effective-config"
 			],
-			"isBackground": false
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
 		},
 		{
-			"label": "Run integration tests",
-			"type": "shell",
-			"command": "./tests/runtests.sh",
-			"isBackground": false
-		},
-		{
-			"label": "Scout quickview local image",
+			"label": "Scan image (Docker Scout)",
+			"detail": "Run after 'Build image (no cache)' or the results are unreliable",
 			"type": "shell",
 			"command": "docker",
 			"args": [
 				"scout",
-				"quickview",
+				"cves",
+				"--only-severity",
+				"critical,high",
 				"local://ia-mirror:local"
 			],
-			"isBackground": false
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Quality gate (all checks)",
+			"detail": "Everything /quality-check runs, in order, stopping at the first failure",
+			"type": "shell",
+			"command": "sh",
+			"args": [
+				"-c",
+				"set -e; python3 -m py_compile docker/fetcher.py docker/web/app.py docker/web/routes.py docker/web/jobs.py scripts/check_dependencies.py; echo '✓ syntax'; docker run --rm -i hadolint/hadolint hadolint --ignore DL3008 - < docker/Dockerfile; echo '✓ hadolint'; python3 -m venv .audit-venv && .audit-venv/bin/pip install --quiet --upgrade pip-audit && .audit-venv/bin/pip-audit -r docker/requirements.txt; docker build --no-cache --pull -f docker/Dockerfile -t ia-mirror:local docker; echo '✓ build'; docker run --rm --entrypoint /bin/sh -v '${workspaceFolder}/tests:/app/tests:ro' -w /app ia-mirror:local -lc 'pytest tests/test_fetcher.py tests/test_web_backend.py tests/test_watcher_service.py tests/test_file_browser_api.py -q'; ./tests/runtests.sh; docker scout cves --only-severity critical,high local://ia-mirror:local"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
 		}
 	]
 }
