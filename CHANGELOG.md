@@ -32,7 +32,7 @@
   - "Built-in parallel mirror workers" now distinguishes upstream's `range_jobs` (5.10.0), which parallelizes byte ranges within one file, from multi-item concurrency, which upstream still lacks.
   - The table now states which `internetarchive` version it compares against.
 - Note two inherited upstream behaviors: downloads have not counted toward archive.org view counts since 5.9.0 (`cnt=0` by default, and `ia-mirror` does not expose the `--count-views` opt-in), and `--range`/`--stdout` partial fetches are upstream-only.
-- Document `IA_USER_AGENT_SUFFIX`. `docker/entrypoint.sh` has supported it since `internetarchive` 5.7.2 — writing it to the `[general]` section of `ia.ini` in both runtime modes — but no README, `.env.example`, or Compose reference mentioned it.
+- Document `IA_USER_AGENT_SUFFIX`. `docker/entrypoint.sh` has supported it since `internetarchive` 5.7.2 — writing it to the `[general]` section of `ia.ini` in both runtime modes — but neither the README nor `docker/example.env` mentioned it. Both now document it.
 
 ## [1.1.7] - 2026-08-16
 
