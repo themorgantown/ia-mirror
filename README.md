@@ -90,6 +90,11 @@ No credentials are needed for public-item dry runs. Remove `IA_DRY_RUN` (or set 
 
 The entrypoint writes `/home/app/.config/ia/ia.ini` with mode `600` when credentials are supplied through environment variables.
 
+Set `IA_USER_AGENT_SUFFIX` to append a custom string to the User-Agent that
+`internetarchive` sends (requires `internetarchive` >= 5.7.2). The entrypoint writes it
+to the `[general]` section of `ia.ini`, so it applies in both Web UI and CLI mode. The
+default User-Agent, including the access key, is always still sent.
+
 ## Ports
 
 | Port | Variable | Purpose |
@@ -359,7 +364,9 @@ Per item, ia-mirror writes:
 
 ## What ia-mirror Adds Beyond `internetarchive`
 
-Upstream [`jjjake/internetarchive`](https://github.com/jjjake/internetarchive) provides the `ia` CLI and Python API for Archive.org operations such as download, upload, search, metadata edits, listing, copy/move/delete, reviews, tasks, and account/configuration commands. `ia-mirror` keeps `internetarchive` as its core dependency, then adds the mirroring appliance features below.
+Upstream [`jjjake/internetarchive`](https://github.com/jjjake/internetarchive) provides the `ia` CLI and Python API for Archive.org operations. As of 5.11.1 its commands are `account`, `configure`, `copy`, `delete`, `download`, `flag`, `list`, `metadata`, `move`, `reviews`, `search`, `simplelists`, `tasks`, and `upload`. `ia-mirror` keeps `internetarchive` as its core dependency, then adds the mirroring appliance features below.
+
+Comparisons in this table are against `internetarchive` 5.11.1, the version pinned in `docker/requirements.txt`.
 
 | Feature in ia-mirror | Upstream `internetarchive` status | What this project adds |
 |----------------------|-----------------------------------|------------------------|
@@ -367,17 +374,25 @@ Upstream [`jjjake/internetarchive`](https://github.com/jjjake/internetarchive) p
 | Docker-first appliance | Not native; upstream supports `pip`, `pipx`, source installs, and a standalone binary | Production container with Gunicorn Web UI, healthcheck, non-root runtime, Compose/Unraid-oriented defaults, and mounted `/downloads` + `/data` state |
 | SQLite job queue and history | Not native | Durable queued/running/completed job state, reorder/delete controls, and automatic queue resume after restart |
 | Per-item mirror reports | Not native | `report.json`, `.ia_status/<identifier>.json`, lock files, and status snapshots beside each downloaded item |
-| Built-in parallel mirror workers | Upstream recommends composing with tools such as GNU Parallel for multi-item concurrency | `-j`/`IA_CONCURRENCY` worker pool inside the wrapper with aggregate progress and ETA |
+| Built-in parallel mirror workers | No multi-item concurrency; upstream recommends composing with tools such as GNU Parallel. `Item.download(range_jobs=...)` (5.10.0) parallelizes byte ranges within a single file only | `-j`/`IA_CONCURRENCY` worker pool inside the wrapper with aggregate progress and ETA |
 | Collection watcher | Not native | Background service that watches collections and queues new/future items |
 | Browser/API batch input | Partially covered by upstream `--itemlist` and `--search` | Paste identifiers or archive.org URLs into the UI/API and normalize them into queued jobs with shared settings |
 | CSV source-to-destination batch mode | Not native for downloads | Batch CSV mode that maps each source identifier to its own destination path and wrapper settings |
-| Verify-only mirror checks | Not native as a standalone download workflow | Check existing local files without downloading, with `exists`, `size`, or `checksum` verification modes |
+| Verify-only mirror checks | Upstream `-C/--checksum` and `--checksum-archive` skip files during a download; there is no standalone verify pass | `--verify-only` checks existing local files without downloading, with `exists`, `size`, or `checksum` verification modes |
 | Local sync cleanup | Not native for local mirrors | `--sync` removes local files that are no longer present in the remote IA item manifest |
-| Estimate and cost reporting | Not native | `--estimate-only`, dry-run reports, assumed bandwidth, and optional cost-per-GB calculations |
+| Estimate and cost reporting | Partially covered: upstream `ia download --dry-run` prints the URLs it would fetch | `--estimate-only` adds total size, assumed-bandwidth time estimates, and optional cost-per-GB calculations on top of a dry run |
 | Bandwidth cap and aggregate speed sampling | Not native | Approximate `--max-mbps` throttling plus sampled aggregate transfer speed/ETA |
-| Polite global backoff controls | Partially covered by upstream retry/timeout flags | Wrapper-level exponential backoff for HTTP 429/5xx responses with configurable base/max/multiplier/jitter |
+| Polite global backoff controls | Partially covered: upstream has `-R/--retries`, `-t/--timeout`, and honors the `Retry-After` header (5.6.0) | Wrapper-level exponential backoff across the whole run for HTTP 429/5xx responses, with configurable base/max/multiplier/jitter |
 | Container-friendly env configuration | Upstream has config files and its own credential/env conventions | `IA_*` and `WEB_*` env-to-argument injection, `--print-effective-config`, and automatic `ia.ini` creation from `IA_ACCESS_KEY`/`IA_SECRET_KEY` |
 | ZIP folder resume helper | Not native | `--resumefolders` skips ZIP downloads when the expected extracted folder already exists |
+
+Two upstream behaviors worth knowing, since `ia-mirror` inherits them:
+
+- Since `internetarchive` 5.9.0, downloads send `cnt=0` and **do not count toward
+  archive.org view counts**. `ia-mirror` does not expose upstream's `--count-views`
+  opt-in, so mirroring never inflates an item's view count.
+- `ia download --range` (5.10.0) and `ia download --stdout` are upstream-only; `ia-mirror`
+  always writes whole files to disk and does not wrap partial byte-range fetches.
 
 ## Development
 

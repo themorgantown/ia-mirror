@@ -23,6 +23,17 @@
 - Add `/upgrade`, `/increment-version`, and `/release-prep` slash commands, and rewrite the five existing ones with frontmatter, explicit success criteria, and the build-cache and `WEB_ENABLED` gotchas documented inline.
 - Correct a CHANGELOG heading typo: the v1.1.6 section was labelled `[1.1.16] - 2026-08-3`, which sorted out of order and named a version that was never tagged.
 
+### Documentation
+- Re-audit the "What ia-mirror Adds Beyond `internetarchive`" table against `internetarchive` 5.11.1; several "Not native" claims had gone stale:
+  - Upstream's command list now includes `flag` and `simplelists`, which the intro paragraph omitted.
+  - "Estimate and cost reporting — Not native" was wrong: `ia download --dry-run` exists. Only the size/time/cost estimation is additive.
+  - "Verify-only mirror checks" now names upstream's `-C/--checksum` and `--checksum-archive`, which skip during a download; the standalone verify pass is still the additive part.
+  - "Polite global backoff controls" now notes upstream honors `Retry-After` (added in 5.6.0).
+  - "Built-in parallel mirror workers" now distinguishes upstream's `range_jobs` (5.10.0), which parallelizes byte ranges within one file, from multi-item concurrency, which upstream still lacks.
+  - The table now states which `internetarchive` version it compares against.
+- Note two inherited upstream behaviors: downloads have not counted toward archive.org view counts since 5.9.0 (`cnt=0` by default, and `ia-mirror` does not expose the `--count-views` opt-in), and `--range`/`--stdout` partial fetches are upstream-only.
+- Document `IA_USER_AGENT_SUFFIX`. `docker/entrypoint.sh` has supported it since `internetarchive` 5.7.2 — writing it to the `[general]` section of `ia.ini` in both runtime modes — but no README, `.env.example`, or Compose reference mentioned it.
+
 ## [1.1.7] - 2026-08-16
 
 ### Security
