@@ -173,11 +173,18 @@ docker run --rm \
 ## Claude Workspace Setup
 
 ### Custom Slash Commands Available
-- `/project:build-local` — Build local Docker image
-- `/project:release <version>` — Create release tag and trigger CI
-- `/project:test-item <identifier>` — Test container with IA item (dry run)
-- `/project:quality-check` — Run comprehensive code quality checks
-- `/project:build-multiarch <version>` — Manual multi-arch build/push
+
+Release path (run in this order):
+- `/release-prep [patch|minor|major|X.Y.Z]` — one-shot: upgrade deps, run the full gate, bump the version and CHANGELOG
+- `/release <version>` — tag and trigger the publish pipeline
+
+Individual steps:
+- `/upgrade` — upgrade all pinned deps (PyPI, base image, Actions SHAs, vendored JS)
+- `/increment-version <patch|minor|major|X.Y.Z>` — bump the version across every file that carries it
+- `/quality-check` — full verification gate (syntax, lint, audit, tests, CVE scan)
+- `/build-local` — build `ia-mirror:local` and smoke-test it
+- `/test-item <identifier>` — dry-run the container against a real IA item
+- `/build-multiarch <version>` — manual multi-arch build/push (escape hatch; CI normally does this)
 
 ### Recommended Tool Permissions
 Use `/permissions` command in Claude to allow these tools:

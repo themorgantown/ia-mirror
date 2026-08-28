@@ -392,7 +392,7 @@ Multi-arch release build example:
 ```bash
 docker buildx create --use --name ia-builder || true
 docker buildx build --platform linux/amd64,linux/arm64 \
-  --build-arg IA_PYPI_VERSION=5.11.0 \
+  --build-arg IA_PYPI_VERSION=5.11.1 \
   --build-arg PROJECT_VERSION=$(cat VERSION) \
   -t themorgantown/ia-mirror:$(cat VERSION) --push -f docker/Dockerfile docker
 ```

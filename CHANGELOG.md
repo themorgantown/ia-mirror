@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.1.8] - 2026-08-24
+
+### Dependencies
+- Bump base image `python` 3.14.6-alpine3.24 → 3.14.7-alpine3.24
+- Bump `internetarchive` 5.11.0 → 5.11.1 — task-log retrieval now goes to `archive.org` instead of `catalogd.archive.org`, which is VPN-restricted; `ia tasks --get-task-log` previously timed out for everyone outside Archive.org
+- Bump `gunicorn` 26.0.0 → 26.2.0 — includes an HTTP/2 security fix. The new cleartext-HTTP/2 (`http2_cleartext`) option defaults to `off`, so the served protocol is unchanged
+- Bump vendored `Socket.IO` client 4.8.1 → 4.8.3 (`docker/static/vendor/socket.io.min.js`)
+- `ARG IA_PYPI_VERSION` in `docker/Dockerfile`, the `IA_PYPI_VERSION` build arg in `release-buildx.yml`, and the README build example all track `requirements.txt` at 5.11.1
+- `Flask` 3.1.3, `Flask-CORS` 6.0.5, `Flask-SocketIO` 5.6.1, `python-socketio` 5.16.4, `pip` 26.2.1, `pytest` 9.1.1, `pytest-flask` 1.3.0, and vendored `Bootstrap` 5.3.8 are already at their latest releases — unchanged
+
+### CI/CD
+- Bump `hadolint/hadolint-action` 3.4.0 → 3.5.0 (ships hadolint 2.15.1). `docker/Dockerfile` lints clean against 2.15.1 with the existing `DL3008` ignore
+- Bump `docker/setup-buildx-action` 4.2.0 → 4.3.0
+- Bump `actions/setup-python` 6.3.0 → 7.0.0. The major bump drops the `pip-install` input, which `ci.yml` never used
+- All actions remain pinned to immutable commit SHAs
+
+### Tooling
+- Fix three developer commands and the matching VS Code task that could never have worked: `docker run ia-mirror:local --print-effective-config` and the `test-item` dry-run both hang forever, because `entrypoint.sh` defaults `WEB_ENABLED=true` and in that mode `exec`s Gunicorn and discards the CLI arguments. All now pass `-e WEB_ENABLED=false`.
+- Fix the "Run pip audit" VS Code task. It shelled into the image to `pip install pip-audit`, but pip was removed from the image in v1.1.7, so the task silently produced no output and no failure. It now audits `docker/requirements.txt` from an isolated host venv, matching `ci.yml`.
+- Replace hardcoded `/Users/daniel/...` paths in `.vscode/tasks.json` with `${workspaceFolder}`.
+- Add `/upgrade`, `/increment-version`, and `/release-prep` slash commands, and rewrite the five existing ones with frontmatter, explicit success criteria, and the build-cache and `WEB_ENABLED` gotchas documented inline.
+- Correct a CHANGELOG heading typo: the v1.1.6 section was labelled `[1.1.16] - 2026-08-3`, which sorted out of order and named a version that was never tagged.
+
 ## [1.1.7] - 2026-08-16
 
 ### Security
@@ -15,7 +38,7 @@
 - The Web UI integration test (`tests/runtests.sh`) never actually ran. It published the container port but did not pass `WEB_HOST=0.0.0.0`, so Gunicorn stayed bound to the container's loopback and every request from the host timed out — the whole test reported as "Container failed to start".
 - With that fixed, the same test exposed a race: it waited for `queue_length` to reach 0 before checking job history, but a job leaves the queue when it *starts* running, not when it finishes. It now polls `/api/jobs` for a terminal (`completed`/`failed`) status.
 
-## [1.1.16] - 2026-08-3
+## [1.1.6] - 2026-08-03
 
 ### Fixed
 - **Web UI jobs were silently rewritten by leftover CLI environment variables.** `fetcher.py` applied `IA_*` settings on top of arguments it had already been given, and the boolean switches were one-way — nothing on the command line could turn one back off. A stale `IA_RESUMEFOLDERS=1` in `docker/live.env` therefore forced every queued download into resumefolders mode, which only ever matches `*.zip`; any item without a zip failed with `❌ No matching files.` and exit code 1 while the UI showed the job's glob as `*`. `IA_COLLECTION=1` leaked the same way, sending single items down the collection lookup path first.

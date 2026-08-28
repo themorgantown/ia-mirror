@@ -1,42 +1,60 @@
-Test the ia-mirror container with Internet Archive item: $ARGUMENTS
+---
+description: Dry-run the container against a real Internet Archive item to verify connectivity, auth, and file selection.
+argument-hint: "<archive.org identifier>"
+allowed-tools: Bash, Read, Grep, Glob
+---
 
-This command performs a dry-run test of the container to verify it can connect and process an Internet Archive item without actually downloading files.
+Dry-run ia-mirror against Internet Archive item: **$ARGUMENTS**
 
-Follow these steps:
+Nothing is downloaded — this verifies the container can reach archive.org,
+authenticate, and resolve the item's file list.
 
-1. Ensure the local image is built (`ia-mirror:local`)
-2. Create a test directory for output
-3. Run the container with dry-run enabled
-4. Verify the container can authenticate and access the item
-5. Check the logs for any errors or warnings
+## Success criteria
 
-Commands to run:
+- Container exits 0.
+- Output lists the files that *would* be downloaded.
+- No authentication or network errors in the log.
+
+## Run
+
 ```bash
-# Create test directory
 mkdir -p ./test-mirror
 
-# Run dry-run test  
 docker run --rm \
-  -v "./test-mirror:/data" \
-  -e IA_IDENTIFIER=$ARGUMENTS \
+  -e WEB_ENABLED=false \
+  -v "$PWD/test-mirror:/data" \
+  -e IA_IDENTIFIER="$ARGUMENTS" \
   -e IA_DESTDIR=/data \
   -e IA_DRY_RUN=true \
-  -e IA_ACCESS_KEY=${IA_ACCESS_KEY} \
-  -e IA_SECRET_KEY=${IA_SECRET_KEY} \
+  -e IA_ACCESS_KEY="${IA_ACCESS_KEY:-}" \
+  -e IA_SECRET_KEY="${IA_SECRET_KEY:-}" \
   ia-mirror:local
 ```
 
-What to look for:
-- Container starts without errors
-- Connects to Internet Archive successfully  
-- Shows what would be downloaded (file list)
-- No authentication errors
-- Clean container shutdown
+`WEB_ENABLED=false` is mandatory. `docker/entrypoint.sh` defaults it to `true`,
+and in that mode it starts Gunicorn and never invokes `fetcher.py` — the run
+hangs and the `IA_*` variables are ignored.
 
-If authentication fails:
-- Verify IA_ACCESS_KEY and IA_SECRET_KEY are set
-- Or mount your ia config: `-v ~/.config/ia:/home/app/.config/ia:ro`
+Requires `ia-mirror:local` to exist; build it with `/build-local` first.
 
-Common test items:
-- `jillem-full-archive` (small test item)
-- `opensource` (very small collection sample)
+## Auth
+
+Credentials are optional for public items. If auth fails, either export
+`IA_ACCESS_KEY` / `IA_SECRET_KEY`, or mount an existing config instead:
+
+```bash
+-v ~/.config/ia:/home/app/.config/ia:ro
+```
+
+## Known-good identifiers
+
+- `jillem-full-archive` — small item
+- `opensource` — small collection sample
+
+## Note on `IA_*` variables
+
+On the CLI path these are *defaults only*: an explicitly passed argument always
+wins (`--glob '*'` beats `IA_GLOB=*.zip`). In Web UI mode, job-configuring `IA_*`
+variables are stripped from the fetcher subprocess entirely — see
+`JOB_CONFIG_ENV_VARS` in `docker/web/jobs.py`. So this command only exercises the
+CLI path.
