@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.9] - 2026-10-05
+
+### Dependencies
+- Bump base image `python` 3.14.7-alpine3.24 → 3.14.8-alpine3.24 (Alpine 3.24.2). Python 3.15.0 is still at rc2, so the 3.14 line is held
+- Bump `python-socketio` 5.16.4 → 5.17.0. Upstream now refuses to let a client join another client's private `sid` room. `ia-mirror`'s socket handlers never join rooms, so app behavior is unchanged. `Flask-SocketIO` 5.6.1 requires `python-socketio>=5.12.0`, which 5.17.0 satisfies
+- Bump vendored `Socket.IO` client 4.8.3 → 4.8.4 (`docker/static/vendor/socket.io.min.js`). The client stays on the 4.x line that the 5.x `python-socketio` server speaks
+- `internetarchive` 5.11.1, `Flask` 3.1.3, `Flask-CORS` 6.0.5, `Flask-SocketIO` 5.6.1, `gunicorn` 26.2.0, `pip` 26.2.1, `pytest` 9.1.1, `pytest-flask` 1.3.0, and vendored `Bootstrap` 5.3.8 are already at their latest releases. They are unchanged
+
+### CI/CD
+- Bump `docker/setup-qemu-action` 4.2.0 → 4.4.0. Dependabot took it to 4.3.0 in #58 and this release takes it to 4.4.0
+- Bump `docker/build-push-action` 7.3.0 → 7.4.0 (Dependabot, #62)
+- Bump `docker/setup-buildx-action` 4.3.0 → 4.4.1. 4.4.0 pre-pulls the BuildKit image before it creates the builder, and 4.4.1 skips that pre-pull for explicit endpoints
+- Bump `anchore/sbom-action` 0.24.0 → 0.24.3. These are maintenance releases with no input changes
+- `actions/checkout` 7.0.1, `actions/setup-python` 7.0.0, `actions/upload-artifact` 7.0.1, `docker/login-action` 4.6.0, `hadolint/hadolint-action` 3.5.0, `peter-evans/create-issue-from-file` 6.0.0, and `peter-evans/dockerhub-description` 5.0.0 are already at their latest releases
+- All actions remain pinned to immutable commit SHAs
+
 ## [1.1.8] - 2026-08-24
 
 ### Dependencies
