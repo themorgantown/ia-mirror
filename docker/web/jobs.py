@@ -142,8 +142,13 @@ class RealJobRunner(JobRunner):
         if self.config.get('verify_only'):
             cmd.append('--verify-only')
             
-        if self.config.get('collection_mode'):
+        if self.config.get('search'):
+            # archive.org search-page URL: the identifier only names the folder.
+            cmd.extend(['--search', self.config['search']])
+        elif self.config.get('collection_mode'):
             cmd.append('--collection')
+            if self.config.get('search_query'):
+                cmd.extend(['--query', self.config['search_query']])
             
         if self.config.get('max_mbps'):
             cmd.extend(['--max-mbps', str(self.config['max_mbps'])])
@@ -223,7 +228,7 @@ class RealJobRunner(JobRunner):
                             
                             if evt_type == 'log':
                                 on_log(data.get('message', ''))
-                            elif evt_type in ('progress', 'file_start', 'file_end', 'dry_run_summary'):
+                            elif evt_type in ('progress', 'file_start', 'file_end', 'dry_run_summary', 'phase', 'metadata_progress'):
                                 # Pass structured events up
                                 on_progress(data)
                             else:
@@ -257,6 +262,18 @@ class MockJobRunner(JobRunner):
         op_prefix = "[VERIFY]" if self.operation == 'verify' else "[MOCK]"
         
         on_log(f"{op_prefix} Starting mock {self.operation}: {self.identifier}")
+
+        if self.config.get('collection_mode') or self.config.get('search'):
+            items = [f"{self.identifier}-item-{n}" for n in range(random.randint(3, 6))]
+            on_progress({'type': 'phase', 'phase': 'searching', 'identifier': self.identifier,
+                         'query': self.config.get('search') or self.config.get('search_query', '')})
+            on_progress({'type': 'phase', 'phase': 'metadata', 'items_total': len(items)})
+            for n, item in enumerate(items, 1):
+                on_log(f"{op_prefix} INFO Fetching metadata for {item}...")
+                time.sleep(random.uniform(0.2, 0.5))
+                on_progress({'type': 'metadata_progress', 'item': item,
+                             'items_done': n, 'items_total': len(items)})
+
         on_log(f"{op_prefix} Found {total_files} files")
         
         # Simulate download

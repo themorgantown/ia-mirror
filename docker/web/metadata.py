@@ -4,6 +4,8 @@ import requests
 from typing import Dict, Optional, Tuple, List
 
 METADATA_API_URL = "https://archive.org/metadata/{identifier}"
+# advancedsearch, not the scrape API: scrape's `total` ignores the query.
+SEARCH_API_URL = "https://archive.org/advancedsearch.php"
 
 
 def fetch_metadata(identifier: str) -> Dict[str, Optional[str]]:
@@ -15,6 +17,7 @@ def fetch_metadata(identifier: str) -> Dict[str, Optional[str]]:
         - title: Item title (or identifier if missing)
         - creator: Item creator (or empty string)
         - thumbnail_url: URL to thumbnail (or None)
+        - mediatype: e.g. 'collection', 'movies' (or '' if unknown)
     """
     try:
         response = requests.get(METADATA_API_URL.format(identifier=identifier), timeout=10)
@@ -54,10 +57,15 @@ def fetch_metadata(identifier: str) -> Dict[str, Optional[str]]:
                     thumbnail_url = f"https://{server}{dir_path}/{name}"
                     break
         
+        mediatype = metadata.get('mediatype', '')
+        if isinstance(mediatype, list):
+            mediatype = mediatype[0] if mediatype else ''
+
         return {
             'title': title,
             'creator': creator,
-            'thumbnail_url': thumbnail_url
+            'thumbnail_url': thumbnail_url,
+            'mediatype': mediatype
         }
         
     except Exception as e:
@@ -70,5 +78,22 @@ def _default_metadata(identifier: str) -> Dict[str, Optional[str]]:
     return {
         'title': identifier,
         'creator': '',
-        'thumbnail_url': None
+        'thumbnail_url': None,
+        'mediatype': ''
     }
+
+
+def count_search_results(query: str) -> Optional[int]:
+    """Return how many items an archive.org search query matches, or None on error."""
+    try:
+        response = requests.get(
+            SEARCH_API_URL,
+            params={'q': query, 'rows': 0, 'output': 'json'},
+            timeout=10,
+        )
+        if response.status_code != 200:
+            return None
+        return int(response.json()['response']['numFound'])
+    except Exception as e:
+        print(f"Error counting search results for {query!r}: {e}")
+        return None

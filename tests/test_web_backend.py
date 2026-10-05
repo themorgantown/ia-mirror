@@ -632,3 +632,204 @@ def test_destinations_validate_invalid(client):
         assert response.json["valid"] is False
     else:
         assert response.status_code == 400
+
+
+class TestCollectionSearchUrls:
+    def test_collection_page_filter_becomes_search_query(self):
+        from web.parsing import search_query_from_url
+
+        url = "https://archive.org/details/hvconnectdrone?tab=collection&and%5B%5D=subject%3A%22Poughkeepsie%22"
+        assert search_query_from_url(url) == '(subject:"Poughkeepsie")'
+
+    def test_filters_follow_archive_org_semantics(self):
+        """Same field ORs, different fields AND, not[] excludes, query is ANDed as-is.
+
+        Verified against archive.org on 2026-10-05: subject Poughkeepsie + Summer on
+        hvconnectdrone shows 380 results, the OR count (AND would be 46).
+        """
+        from web.parsing import search_query_from_url
+
+        url = (
+            "https://archive.org/details/c?and[]=subject:%22A%22&and[]=year:%222020%22"
+            "&and[]=subject:%22B%22&not[]=mediatype:%22texts%22&query=bridge"
+        )
+        assert search_query_from_url(url) == (
+            '(bridge) AND (subject:"A" OR subject:"B") AND (year:"2020") AND NOT mediatype:"texts"'
+        )
+
+    def test_url_without_filters_has_no_query(self):
+        from web.parsing import search_query_from_url
+
+        assert search_query_from_url("https://archive.org/details/hvconnectdrone") == ""
+        assert search_query_from_url("https://archive.org/details/hvconnectdrone?tab=about") == ""
+
+    def test_batch_entries_keep_urls_with_commas_whole(self):
+        from web.parsing import parse_batch_entries
+
+        entries, invalid = parse_batch_entries(
+            "item-one,item-two\n"
+            # Browsers encode the space and quotes when copying, but leave the comma.
+            "https://archive.org/details/coll?and[]=subject:%22Hudson,%20NY%22\n"
+        )
+
+        assert invalid == []
+        assert [e["identifier"] for e in entries] == ["item-one", "item-two", "coll"]
+        assert entries[2]["query"] == '(subject:"Hudson, NY")'
+        assert entries[0]["query"] == ""
+        assert entries[2]["source"].startswith("https://archive.org/details/coll")
+
+    def test_collection_search_query(self):
+        from web.parsing import collection_search_query
+
+        assert collection_search_query("c") == 'collection:"c"'
+        assert collection_search_query("c", "(a OR b)") == 'collection:"c" AND ((a OR b))'
+
+
+def test_fetch_metadata_reports_mediatype():
+    with patch("requests.get") as mock_get:
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"metadata": {"title": "C", "mediatype": "collection"}, "files": []}),
+        )
+        assert fetch_metadata("c")["mediatype"] == "collection"
+
+
+def test_real_runner_passes_query_only_in_collection_mode():
+    def command_for(config):
+        runner = RealJobRunner(1, "coll", "/downloads", config)
+        with patch("subprocess.Popen") as mock_popen, patch("os.makedirs"):
+            mock_popen.return_value = MagicMock(stdout=[], returncode=0)
+            runner.run(lambda line: None, lambda progress: None)
+        return mock_popen.call_args.args[0]
+
+    cmd = command_for({"collection_mode": True, "search_query": '(subject:"x")'})
+    assert cmd[cmd.index("--query") + 1] == '(subject:"x")'
+    assert "--collection" in cmd
+
+    assert "--query" not in command_for({"search_query": '(subject:"x")'})
+
+
+def test_append_job_log_returns_increasing_ids(storage):
+    job_id = storage.add_job("item", "item")
+    first = storage.append_job_log(job_id, "one")
+    second = storage.append_job_log(job_id, "two")
+
+    assert second > first
+    assert [(l["id"], l["line"]) for l in storage.get_job_logs(job_id)] == [(first, "one"), (second, "two")]
+
+
+COLLECTION_URL = "https://archive.org/details/hvconnectdrone?tab=collection&and%5B%5D=subject%3A%22Poughkeepsie%22"
+
+
+def _fake_metadata(identifier):
+    mediatype = "collection" if identifier == "hvconnectdrone" else "movies"
+    return {"title": identifier.upper(), "creator": "", "thumbnail_url": None, "mediatype": mediatype}
+
+
+def test_inspect_flags_collections_with_filtered_count(client):
+    with patch("web.routes.fetch_metadata", side_effect=_fake_metadata), \
+         patch("web.routes.count_search_results", return_value=90) as count:
+        response = client.post("/api/inspect", json={"text": f"plain-item\n{COLLECTION_URL}"})
+
+    assert response.status_code == 200
+    plain, coll = response.json["entries"]
+    assert plain["is_collection"] is False and plain["item_count"] is None
+    assert coll["is_collection"] is True
+    assert coll["item_count"] == 90
+    assert coll["query"] == '(subject:"Poughkeepsie")'
+    count.assert_called_once_with('collection:"hvconnectdrone" AND ((subject:"Poughkeepsie"))')
+
+
+def test_collection_mode_is_opt_in_per_identifier(client, storage):
+    """A collection URL alone never turns on collection mode; collection_ids does."""
+    with patch("web.routes.fetch_metadata", side_effect=_fake_metadata):
+        client.post("/api/queue/add", json={"text": COLLECTION_URL})
+        client.post("/api/queue/add", json={"text": f"plain-item {COLLECTION_URL}",
+                                            "collection_ids": ["hvconnectdrone"]})
+
+    import json as _json
+    jobs = sorted(storage.get_queued_jobs(), key=lambda j: j["id"])
+    configs = [(j["identifier"], _json.loads(j["config"]) if isinstance(j["config"], str) else j["config"]) for j in jobs]
+
+    declined, plain, expanded = configs
+    assert declined[0] == "hvconnectdrone" and not declined[1].get("collection_mode")
+    assert "search_query" not in declined[1]
+    assert plain[0] == "plain-item" and not plain[1].get("collection_mode")
+    assert expanded[1]["collection_mode"] is True
+    assert expanded[1]["search_query"] == '(subject:"Poughkeepsie")'
+    assert jobs[2]["input_original"] == COLLECTION_URL
+
+
+class TestSearchPageUrls:
+    def test_search_page_becomes_search_entry(self):
+        from web.parsing import parse_batch_entries
+
+        entries, invalid = parse_batch_entries(
+            "https://archive.org/search?query=poughkeepsie+drone&and%5B%5D=mediatype%3A%22movies%22"
+        )
+
+        assert invalid == []
+        assert entries == [{
+            "identifier": "search-poughkeepsie-drone-and-mediatype-movies",
+            "query": '(poughkeepsie drone) AND (mediatype:"movies")',
+            "source": "https://archive.org/search?query=poughkeepsie+drone&and%5B%5D=mediatype%3A%22movies%22",
+            "kind": "search",
+        }]
+
+    def test_full_text_and_empty_searches_are_rejected(self):
+        """`sin=TXT` searches book text, an index `ia search` cannot query."""
+        from web.parsing import parse_batch_entries
+
+        entries, invalid = parse_batch_entries(
+            "https://archive.org/search?query=hudson&sin=TXT\nhttps://archive.org/search"
+        )
+        assert entries == []
+        assert len(invalid) == 2
+
+    def test_search_folder_name_is_a_valid_identifier(self):
+        from web.parsing import normalize_identifier, search_folder_name
+
+        name = search_folder_name('(Hudson "River" & co.) ' + "x" * 200)
+        assert name.startswith("search-hudson-river-co-x")
+        assert len(name) <= len("search-") + 80
+        assert normalize_identifier(name) == (name, True)
+
+
+SEARCH_URL = "https://archive.org/search?query=poughkeepsie+drone"
+
+
+def test_inspect_counts_search_results(client):
+    with patch("web.routes.fetch_metadata") as meta, \
+         patch("web.routes.count_search_results", return_value=92) as count:
+        response = client.post("/api/inspect", json={"text": SEARCH_URL})
+
+    (entry,) = response.json["entries"]
+    assert entry["is_search"] is True and entry["is_collection"] is False
+    assert entry["item_count"] == 92
+    count.assert_called_once_with("(poughkeepsie drone)")
+    meta.assert_not_called()
+
+
+def test_search_url_queues_a_search_job(client, storage):
+    """Even with Collection Mode ticked, a search URL runs as a search, not a collection."""
+    with patch("web.routes.fetch_metadata", side_effect=_fake_metadata):
+        client.post("/api/queue/add", json={"text": SEARCH_URL, "config": {"collection_mode": True}})
+
+    import json as _json
+    (job,) = storage.get_queued_jobs()
+    config = _json.loads(job["config"]) if isinstance(job["config"], str) else job["config"]
+    assert job["identifier"] == "search-poughkeepsie-drone"
+    assert config["search"] == "(poughkeepsie drone)"
+    assert "collection_mode" not in config
+    assert job["title"] == "Search: (poughkeepsie drone)"
+
+
+def test_real_runner_passes_search():
+    runner = RealJobRunner(1, "search-drone", "/downloads", {"search": "(drone)", "collection_mode": True})
+    with patch("subprocess.Popen") as mock_popen, patch("os.makedirs"):
+        mock_popen.return_value = MagicMock(stdout=[], returncode=0)
+        runner.run(lambda line: None, lambda progress: None)
+    cmd = mock_popen.call_args.args[0]
+
+    assert cmd[cmd.index("--search") + 1] == "(drone)"
+    assert "--collection" not in cmd

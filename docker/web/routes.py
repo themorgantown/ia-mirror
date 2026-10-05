@@ -4,8 +4,9 @@ import os
 import json
 from flask import request, jsonify, send_file, render_template, abort
 from flask_socketio import emit
-from .parsing import parse_batch_input, validate_destination, safe_join
-from .metadata import fetch_metadata
+from concurrent.futures import ThreadPoolExecutor
+from .parsing import parse_batch_entries, validate_destination, safe_join, collection_search_query
+from .metadata import fetch_metadata, count_search_results
 import shutil
 import mimetypes
 
@@ -445,7 +446,70 @@ def register_routes(app, storage, worker, socketio, watcher=None):
         return jsonify({'logs': logs})
 
     # ============ Queue Management ============
-    
+
+    def enqueue_entries(entries, operation, config, collection_ids):
+        """Queue one job per parsed entry and return the job ids.
+
+        Identifiers in `collection_ids` - collections the user chose to expand -
+        run in collection mode. A collection-mode job carries its URL's search
+        filter, so only the matching items are mirrored. A search-page entry always
+        runs as a search: the URL itself asks for its results.
+        """
+        job_ids = []
+        for entry in entries:
+            identifier = entry['identifier']
+            job_config = dict(config)
+            if entry['kind'] == 'search':
+                job_config.pop('collection_mode', None)
+                job_config['search'] = entry['query']
+                job_ids.append(storage.add_job(
+                    identifier=identifier,
+                    input_original=entry['source'],
+                    operation=operation,
+                    config=job_config,
+                    title=f"Search: {entry['query']}",
+                ))
+                continue
+            if identifier in collection_ids:
+                job_config['collection_mode'] = True
+            if job_config.get('collection_mode') and entry['query']:
+                job_config['search_query'] = entry['query']
+
+            meta = fetch_metadata(identifier)
+            job_ids.append(storage.add_job(
+                identifier=identifier,
+                input_original=entry['source'],
+                operation=operation,
+                config=job_config,
+                title=meta.get('title'),
+                creator=meta.get('creator'),
+                thumbnail_url=meta.get('thumbnail_url')
+            ))
+        return job_ids
+
+    @app.route('/api/inspect', methods=['POST'])
+    def inspect_input():
+        """Flag which inputs are collections, so the UI can offer collection mode."""
+        data = get_json_data()
+        entries, invalid = parse_batch_entries(data.get('text', ''))
+
+        def inspect(entry):
+            if entry['kind'] == 'search':
+                return {**entry, 'title': 'archive.org search', 'is_collection': False,
+                        'is_search': True, 'item_count': count_search_results(entry['query'])}
+            meta = fetch_metadata(entry['identifier'])
+            is_collection = meta.get('mediatype') == 'collection'
+            item_count = None
+            if is_collection:
+                item_count = count_search_results(
+                    collection_search_query(entry['identifier'], entry['query']))
+            return {**entry, 'title': meta.get('title'), 'is_collection': is_collection,
+                    'is_search': False, 'item_count': item_count}
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(inspect, entries))
+        return jsonify({'entries': results, 'invalid': invalid})
+
     @app.route('/api/queue/add', methods=['POST'])
     def queue_add():
         """Add one or more items to queue."""
@@ -455,23 +519,8 @@ def register_routes(app, storage, worker, socketio, watcher=None):
         operation = data.get('operation', 'download')
         config = data.get('config', {})
         
-        valid, invalid = parse_batch_input(text)
-        
-        job_ids = []
-        for identifier in valid:
-            # Fetch metadata
-            meta = fetch_metadata(identifier)
-            
-            job_id = storage.add_job(
-                identifier=identifier,
-                input_original=identifier,
-                operation=operation,
-                config=config,
-                title=meta.get('title'),
-                creator=meta.get('creator'),
-                thumbnail_url=meta.get('thumbnail_url')
-            )
-            job_ids.append(job_id)
+        entries, invalid = parse_batch_entries(text)
+        job_ids = enqueue_entries(entries, operation, config, set(data.get('collection_ids', [])))
         
         # Notify clients
         socketio.emit('queue_update', {
@@ -480,7 +529,7 @@ def register_routes(app, storage, worker, socketio, watcher=None):
         
         return jsonify({
             'job_ids': job_ids,
-            'valid_count': len(valid),
+            'valid_count': len(entries),
             'invalid': invalid
         })
     
@@ -526,27 +575,12 @@ def register_routes(app, storage, worker, socketio, watcher=None):
             config = data.get('config', {})
             
             # Parse identifiers
-            valid, invalid = parse_batch_input(text)
+            entries, invalid = parse_batch_entries(text)
             
-            if not valid:
+            if not entries:
                 return jsonify({'error': 'No valid identifiers found', 'invalid': invalid}), 400
             
-            # Add jobs to queue
-            job_ids = []
-            for identifier in valid:
-                # Fetch metadata
-                meta = fetch_metadata(identifier)
-                
-                job_id = storage.add_job(
-                    identifier=identifier,
-                    input_original=identifier,
-                    operation=operation,
-                    config=config,
-                    title=meta.get('title'),
-                    creator=meta.get('creator'),
-                    thumbnail_url=meta.get('thumbnail_url')
-                )
-                job_ids.append(job_id)
+            job_ids = enqueue_entries(entries, operation, config, set(data.get('collection_ids', [])))
 
             # Ensure processing is enabled when jobs exist in queue
             storage.update_worker_state(is_processing_queue=True)
@@ -563,7 +597,7 @@ def register_routes(app, storage, worker, socketio, watcher=None):
                 'status': response_status,
                 'message': message,
                 'job_ids': job_ids,
-                'valid_count': len(valid),
+                'valid_count': len(entries),
                 'invalid': invalid,
                 'active_job': {
                     'id': active_job.get('id'),

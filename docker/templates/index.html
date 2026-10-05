@@ -59,7 +59,7 @@
                             <label for="batch-input" class="form-label ui-label mb-0">Identifiers / URLs</label>
                             <details class="help-pop">
                                 <summary aria-label="Help for identifiers">?</summary>
-                                <div class="help-popover">Paste Internet Archive item IDs or full `archive.org/details/...` links, one per line.</div>
+                                <div class="help-popover">Paste Internet Archive item IDs or full `archive.org/details/...` links, one per line. For a collection you'll be asked whether to download every item in it. A filtered collection link (for example one with `and[]=subject:...` after you pick a subject on archive.org) downloads only the matching items, and an `archive.org/search?query=...` link downloads every search result into a `search-...` folder.</div>
                             </details>
                         </div>
                         <span id="validate-status" class="text-xs fw-medium text-secondary">Ready</span>
@@ -211,6 +211,30 @@
 +------------------------------------------+</pre>
             </section>
 
+            <section class="directory-panel homepage-panel live-log-panel" id="live-log-panel" aria-labelledby="live-log-title" hidden>
+                <div class="panel-heading-row live-log-header">
+                    <div class="label-with-help">
+                        <h3 id="live-log-title" class="ui-label">Live Log</h3>
+                        <span id="live-log-state" class="live-log-state" data-state="idle">idle</span>
+                    </div>
+                    <span id="live-log-counts" class="text-xs fw-medium text-secondary"></span>
+                </div>
+                <div class="live-log-toolbar" role="toolbar" aria-label="Log controls">
+                    <select id="live-log-level" class="form-select form-select-sm form-control-modern" aria-label="Filter log by level">
+                        <option value="all" selected>All lines</option>
+                        <option value="problems">Warnings &amp; errors</option>
+                    </select>
+                    <input id="live-log-search" type="search" class="form-control form-control-sm form-control-modern" placeholder="Filter text…" aria-label="Filter log text">
+                    <div class="form-check form-check-modern small mb-0">
+                        <input class="form-check-input" type="checkbox" id="live-log-follow" checked>
+                        <label class="form-check-label" for="live-log-follow">Follow</label>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-ghost" id="live-log-copy">Copy</button>
+                    <a class="btn btn-sm btn-ghost" id="live-log-download" href="#" hidden>Download .log</a>
+                </div>
+                <div id="live-log" class="live-log" role="log" aria-live="off" tabindex="0"></div>
+            </section>
+
             <section class="directory-panel homepage-panel recent-downloads-panel" aria-labelledby="recent-downloads-title">
                 <div class="panel-heading-row mb-2">
                     <div class="label-with-help">
@@ -304,6 +328,28 @@
     </div>
 
     
+
+    <!-- Collection Detected Modal -->
+    <div class="modal fade" id="collectionModal" tabindex="-1" aria-hidden="true" aria-labelledby="collection-modal-title" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0" style="background-color: var(--color-surface);">
+                <div class="modal-header border-bottom border">
+                    <h5 class="modal-title fw-bold font-heading" id="collection-modal-title">Collection detected</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cancel"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <p class="mb-3" id="collection-modal-question">Do you want to download all items in that collection?</p>
+                    <ul class="collection-list" id="collection-list"></ul>
+                    <p class="text-xs text-secondary mb-0" id="collection-modal-note">Otherwise only the collection's own page files (its metadata) are downloaded.</p>
+                </div>
+                <div class="modal-footer border-top border">
+                    <button type="button" class="btn btn-ghost text-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-ghost" id="collection-metadata-btn">Metadata only</button>
+                    <button type="button" class="btn btn-primary-modern px-4" id="collection-all-btn">Download all items</button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Settings Modal -->
     <div class="modal fade" id="settingsModal" tabindex="-1" aria-hidden="true" aria-labelledby="settings-modal-title">

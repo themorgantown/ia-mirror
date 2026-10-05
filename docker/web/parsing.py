@@ -1,7 +1,49 @@
 """URL and identifier parsing utilities."""
 
 import re
-from typing import Tuple, List
+from typing import Dict, Tuple, List
+from urllib.parse import parse_qs, urlsplit
+
+
+def search_query_from_url(url: str) -> str:
+    """
+    Translate the search filters on an archive.org collection page URL into an
+    `ia search` query fragment (without the `collection:` clause).
+
+    Mirrors archive.org's own semantics: several `and[]` values for one field are
+    ORed, different fields are ANDed, `not[]` values are excluded, and `query`
+    (search within the collection) is ANDed as written.
+
+        ?query=bridge&and[]=subject:"A"&and[]=subject:"B"&not[]=year:"2020"
+        -> (bridge) AND (subject:"A" OR subject:"B") AND NOT year:"2020"
+
+    Returns '' when the URL carries no filters.
+    """
+    if '?' not in url:
+        return ''
+    params = parse_qs(urlsplit(url).query)
+    by_field: Dict[str, List[str]] = {}
+    for value in params.get('and[]', []):
+        by_field.setdefault(value.split(':', 1)[0], []).append(value)
+    clauses = [f"({q.strip()})" for q in params.get('query', []) if q.strip()]
+    clauses += [f"({' OR '.join(values)})" for values in by_field.values()]
+    clauses += [f"NOT {value}" for value in params.get('not[]', [])]
+    return ' AND '.join(clauses)
+
+
+_SEARCH_PAGE_URL = re.compile(r'archive\.org/search(?:\.php)?(?:[?#]|$)')
+
+
+def search_folder_name(query: str) -> str:
+    """Destination folder for a search-page download: search-<slug of the query>."""
+    slug = re.sub(r'[^a-z0-9]+', '-', query.lower()).strip('-')[:80].rstrip('-')
+    return f"search-{slug or 'results'}"
+
+
+def collection_search_query(collection_id: str, query: str = '') -> str:
+    """The `ia search` query for a collection's items, narrowed by `query` if given."""
+    base = f'collection:"{collection_id}"'
+    return f'{base} AND ({query})' if query else base
 
 
 def normalize_identifier(line: str) -> Tuple[str, bool]:
@@ -34,35 +76,66 @@ def normalize_identifier(line: str) -> Tuple[str, bool]:
     return line, False
 
 
-def parse_batch_input(text: str) -> Tuple[List[str], List[str]]:
+def parse_batch_entries(text: str) -> Tuple[List[Dict[str, str]], List[str]]:
     """
-    Parse batch input (newline-separated identifiers/URLs).
-    
+    Parse batch input (newline-separated identifiers/URLs) into entries.
+
+    Each entry is {'identifier', 'query', 'source', 'kind'}. For an
+    archive.org/details/ URL `query` is its search filter ('' if none) and kind is
+    'item'. An archive.org/search URL has kind 'search': `query` is the whole
+    search and `identifier` the folder its results go in. `source` is the raw token.
+
     Returns:
-        Tuple[valid_identifiers, invalid_lines]
+        Tuple[entries, invalid_lines]
     """
-    valid = []
+    entries = []
     invalid = []
-    
+
     # Split by newlines first to handle comments
     tokens = []
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith('#'):
             continue
-        # Split line by comma or space
-        line_tokens = [t for t in re.split(r'[,\s]+', line) if t.strip()]
-        tokens.extend(line_tokens)
-    
+        # Split by whitespace, then by comma - except inside URLs, whose search
+        # filters can legitimately contain commas (subject:"Hudson, NY").
+        for part in line.split():
+            is_url = '://' in part or 'archive.org/' in part
+            tokens.extend([part] if is_url else [t for t in part.split(',') if t])
+
     for token in tokens:
+        if _SEARCH_PAGE_URL.search(token):
+            query = search_query_from_url(token)
+            # Full-text, TV-caption and radio searches (`sin=`) use a different index
+            # than `ia search`, so they cannot be reproduced; reject rather than guess.
+            full_text = parse_qs(urlsplit(token).query).get('sin', [''])[0]
+            if query and not full_text:
+                entries.append({'identifier': search_folder_name(query), 'query': query,
+                                'source': token, 'kind': 'search'})
+            else:
+                invalid.append(token)
+            continue
+
         identifier, is_valid = normalize_identifier(token)
         if identifier:
             if is_valid:
-                valid.append(identifier)
+                query = search_query_from_url(token) if 'archive.org/details/' in token else ''
+                entries.append({'identifier': identifier, 'query': query, 'source': token, 'kind': 'item'})
             else:
                 invalid.append(token)
-    
-    return valid, invalid
+
+    return entries, invalid
+
+
+def parse_batch_input(text: str) -> Tuple[List[str], List[str]]:
+    """
+    Parse batch input (newline-separated identifiers/URLs).
+
+    Returns:
+        Tuple[valid_identifiers, invalid_lines]
+    """
+    entries, invalid = parse_batch_entries(text)
+    return [e['identifier'] for e in entries], invalid
 
 
 def safe_join(base: str, subpath: str) -> str:

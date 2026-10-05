@@ -81,9 +81,10 @@ def create_app(config=None):
             'queue_length': len(storage.get_queued_jobs())
         }, namespace='/')
     
-    def on_job_log(job_id, line):
+    def on_job_log(job_id, line, log_id=None):
         socketio.emit('log_line', {
             'job_id': job_id,
+            'id': log_id,
             'line': line,
             'timestamp': time.time()
         }, namespace='/')

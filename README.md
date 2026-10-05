@@ -184,6 +184,20 @@ Examples:
 
 The UI normalizes each line into an IA identifier, then enqueues jobs with the chosen operation and config.
 
+**Collections.** When a line is a collection (for example `https://archive.org/details/hvconnectdrone`), the UI asks *"Collection detected, do you want to download all items in that collection?"* and shows how many items that means. Choose **Download all items** to mirror every item in it (collection mode), or **Metadata only** to fetch just the collection's own page files. Collection mode is never switched on without asking. The **Collection Mode** checkbox under Advanced turns it on for every line up front.
+
+**Filtered collection links.** Narrow a collection on archive.org (pick a subject, year, and so on), then paste the address bar URL, for example:
+
+```text
+https://archive.org/details/hvconnectdrone?tab=collection&and%5B%5D=subject%3A%22Poughkeepsie%22
+```
+
+Only the matching items are downloaded (90 of the collection's 457 in this example). The filters are translated with archive.org's own rules: several values of one field (`and[]=subject:"A"&and[]=subject:"B"`) match either value, different fields must all match, `not[]` values are excluded, and a `query=` search-within-collection is applied as written. Item counts come from archive.org's search engine, which matches subject phrases slightly more loosely than the website's facet checkboxes, so a count can differ by a few items for subjects that appear inside longer subject names.
+
+**Search pages.** Paste an `archive.org/search?query=...` URL, facet filters included, and every matching item is downloaded into `/downloads/search-<query>/<item>/`, for example `search-poughkeepsie-drone`. The UI shows the result count and asks before starting. Full-text, TV-caption, and radio searches (URLs with `sin=`) use an index `ia search` cannot query, so they are rejected rather than approximated.
+
+**Progress and log.** While a collection job lists its items and fetches each item's metadata, the progress console shows `fetching metadata` with an `N / total items` counter. The **Live Log** panel appears as soon as a job starts writing and streams its log in real time, with levels color-coded, a warnings-and-errors filter, text search, Follow (auto-scroll that pauses when you scroll up), Copy, and a download link for the job's full `ia_download.log`. Reloading the page mid-job restores the recent lines.
+
 Basic controls include:
 
 - destination under `/downloads`
@@ -208,11 +222,14 @@ The Global Settings modal persists UI defaults and optional IA credentials to th
 
 ### Queue and job control
 
+- `POST /api/inspect` - body `{"text": "..."}`; reports for each line its identifier, any search filter from the URL, whether it is a collection or a search page, and the matching item count
 - `POST /api/queue/add`
 - `POST /api/queue/reorder`
 - `DELETE /api/queue/<id>`
 - `POST /api/job/start`
 - `POST /api/job/stop`
+
+`/api/queue/add` and `/api/job/start` take an optional `collection_ids` list. Identifiers in it run in collection mode, narrowed by their URL's filter; every other line downloads as a single item.
 - `POST /api/jobs/<id>/unlock`
 
 ### Status and history
@@ -270,6 +287,32 @@ docker run --rm \
   -e IA_CHECKSUM=1 \
   themorgantown/ia-mirror:latest
 ```
+
+### Filtered collection
+
+Mirror only the items in a collection that match an archive.org search query:
+
+```bash
+docker run --rm \
+  -v "$PWD/mirror:/downloads" \
+  -e WEB_ENABLED=false \
+  themorgantown/ia-mirror:latest \
+  hvconnectdrone --destdir /downloads --collection --query 'subject:"Poughkeepsie"' --dry-run
+```
+
+`--query` requires `--collection`. If it matches no items the run fails, instead of falling back to the collection's own item.
+
+To mirror every result of an archive.org search, pass the query with `--search`. The identifier then only names the destination folder:
+
+```bash
+docker run --rm \
+  -v "$PWD/mirror:/downloads" \
+  -e WEB_ENABLED=false \
+  themorgantown/ia-mirror:latest \
+  search-poughkeepsie-drone --destdir /downloads --search 'poughkeepsie drone' --dry-run
+```
+
+Collection and search runs fetch item metadata `--concurrency` at a time. archive.org's metadata API answers a short burst at once, then about one request per second, so expect roughly a second per item beyond the first dozen or so.
 
 ### Verify only
 
@@ -370,20 +413,21 @@ Comparisons in this table are against `internetarchive` 5.11.1, the version pinn
 
 | Feature in ia-mirror | Upstream `internetarchive` status | What this project adds |
 |----------------------|-----------------------------------|------------------------|
-| Persistent Web UI | Not native; upstream is CLI/Python API focused | Browser queue manager, global settings, job history, file browser, log viewer, and WebSocket progress |
-| Docker-first appliance | Not native; upstream supports `pip`, `pipx`, source installs, and a standalone binary | Production container with Gunicorn Web UI, healthcheck, non-root runtime, Compose/Unraid-oriented defaults, and mounted `/downloads` + `/data` state |
-| SQLite job queue and history | Not native | Durable queued/running/completed job state, reorder/delete controls, and automatic queue resume after restart |
+| Persistent Web UI | Not native; upstream is CLI/Python API focused | Browser form to queue jobs with per-run options, global settings, recent downloads, WebSocket progress (including the collection metadata phase), and a live job log with level filters and search. Job history, queue reorder/delete, and the file browser are REST API only, with no UI yet |
+| Collection, filtered-collection, and search-page downloads from a URL | Partially covered: `ia download --search 'collection:x AND subject:y'` downloads every search hit, but you write the query yourself | Detects a pasted collection URL, shows its item count, and asks before downloading every item (off by default). Filtered collection URLs (`?and[]=subject:"..."`) and `archive.org/search?query=...` pages become the equivalent search query using archive.org's own same-field-OR, cross-field-AND rules. Search results land in a `search-<query>` folder. CLI equivalents: `--collection --query` and `--search` |
+| Docker-first appliance | Not native; upstream supports `pip`, `pipx`, source installs, and a standalone binary | Production container with Gunicorn Web UI, healthcheck, non-root runtime, a Compose file, and mounted `/downloads` + `/data` state |
+| SQLite job queue and history | Not native | Durable queued/running/completed job state, reorder/delete through the API, and automatic queue resume after restart |
 | Per-item mirror reports | Not native | `report.json`, `.ia_status/<identifier>.json`, lock files, and status snapshots beside each downloaded item |
 | Built-in parallel mirror workers | No multi-item concurrency; upstream recommends composing with tools such as GNU Parallel. `Item.download(range_jobs=...)` (5.10.0) parallelizes byte ranges within a single file only | `-j`/`IA_CONCURRENCY` worker pool inside the wrapper with aggregate progress and ETA |
-| Collection watcher | Not native | Background service that watches collections and queues new/future items |
+| Collection watcher | Not native | Background service that watches collections and queues new/future items (configured through the API) |
 | Browser/API batch input | Partially covered by upstream `--itemlist` and `--search` | Paste identifiers or archive.org URLs into the UI/API and normalize them into queued jobs with shared settings |
 | CSV source-to-destination batch mode | Not native for downloads | Batch CSV mode that maps each source identifier to its own destination path and wrapper settings |
 | Verify-only mirror checks | Upstream `-C/--checksum` and `--checksum-archive` skip files during a download; there is no standalone verify pass | `--verify-only` checks existing local files without downloading, with `exists`, `size`, or `checksum` verification modes |
 | Local sync cleanup | Not native for local mirrors | `--sync` removes local files that are no longer present in the remote IA item manifest |
 | Estimate and cost reporting | Partially covered: upstream `ia download --dry-run` prints the URLs it would fetch | `--estimate-only` adds total size, assumed-bandwidth time estimates, and optional cost-per-GB calculations on top of a dry run |
 | Bandwidth cap and aggregate speed sampling | Not native | Approximate `--max-mbps` throttling plus sampled aggregate transfer speed/ETA |
-| Polite global backoff controls | Partially covered: upstream has `-R/--retries`, `-t/--timeout`, and honors the `Retry-After` header (5.6.0) | Wrapper-level exponential backoff across the whole run for HTTP 429/5xx responses, with configurable base/max/multiplier/jitter |
-| Container-friendly env configuration | Upstream has config files and its own credential/env conventions | `IA_*` and `WEB_*` env-to-argument injection, `--print-effective-config`, and automatic `ia.ini` creation from `IA_ACCESS_KEY`/`IA_SECRET_KEY` |
+| Polite global backoff controls | Partially covered: each upstream request retries HTTP 429/500-504 with exponential backoff and honors the `Retry-After` header (5.6.0); `-R/--retries` and `-t/--timeout` tune it | Run-wide backoff shared by every worker: any failed download attempt (rate limit, server error, or timeout) pauses all workers, with configurable base/max/multiplier/jitter |
+| Container-friendly env configuration | Upstream has config files and its own credential/env conventions | `IA_*` env-to-argument injection, `WEB_*` settings for the UI server, `--print-effective-config`, and automatic `ia.ini` creation from `IA_ACCESS_KEY`/`IA_SECRET_KEY` |
 | ZIP folder resume helper | Not native | `--resumefolders` skips ZIP downloads when the expected extracted folder already exists |
 
 Two upstream behaviors worth knowing, since `ia-mirror` inherits them:

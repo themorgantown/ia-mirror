@@ -217,3 +217,175 @@ def test_cli_supplied_dests_maps_real_option_strings():
 
     assert {"glob", "concurrency", "dry_run", "formats"} <= supplied
     assert "collection" not in supplied
+
+
+def test_get_collection_items_narrows_search_with_query(monkeypatch):
+    """--query is ANDed onto collection:"<id>", parenthesized so its ORs stay inside it."""
+    captured = {}
+
+    def fake_run_cmd(cmd):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout="item-a\nitem-b\n")
+
+    monkeypatch.setattr(fetcher, "run_cmd", fake_run_cmd)
+
+    items = fetcher.get_collection_items("ia", "hvconnectdrone", '(subject:"A" OR subject:"B")')
+
+    assert items == ["item-a", "item-b"]
+    assert captured["cmd"] == [
+        "ia", "search",
+        'collection:"hvconnectdrone" AND ((subject:"A" OR subject:"B"))',
+        "--itemlist",
+    ]
+
+
+def test_query_requires_collection_mode(monkeypatch, tmp_path):
+    """A search filter only means something for a collection; fail instead of ignoring it."""
+    monkeypatch.setenv("IA_HEALTH_PORT", "0")
+    monkeypatch.delenv("IA_COLLECTION", raising=False)
+    monkeypatch.setattr(sys, "argv", [
+        "fetcher.py", "mirror", "some-item", "--query", 'subject:"x"', "--destdir", str(tmp_path),
+    ])
+
+    with pytest.raises(SystemExit) as exc:
+        fetcher.main()
+    assert exc.value.code == 2
+
+
+def test_filtered_collection_with_no_matches_fails_instead_of_falling_back(monkeypatch, tmp_path):
+    """An empty unfiltered collection falls back to downloading the item itself, but a
+    filter that matches nothing must not: that would silently mirror the wrong thing."""
+    monkeypatch.setenv("IA_HEALTH_PORT", "0")
+    monkeypatch.setattr(sys, "argv", [
+        "fetcher.py", "mirror", "hvconnectdrone", "--collection", "--query", 'subject:"Nowhere"',
+        "--destdir", str(tmp_path), "--no-lock",
+    ])
+    monkeypatch.setattr(fetcher, "find_ia_executable", lambda custom=None: "ia")
+    monkeypatch.setattr(fetcher, "get_collection_items", lambda ia, cid, query="": [])
+    get_manifest = MagicMock()
+    monkeypatch.setattr(fetcher, "get_manifest", get_manifest)
+    fetcher._shutdown_event.clear()
+
+    assert fetcher.main() == 1
+    get_manifest.assert_not_called()
+
+
+def test_collection_metadata_phase_emits_progress_events(monkeypatch, tmp_path, capsys):
+    """The Web UI's progress console relies on these events while manifests download."""
+    monkeypatch.setenv("IA_HEALTH_PORT", "0")
+    monkeypatch.setattr(sys, "argv", [
+        "fetcher.py", "mirror", "coll", "--collection", "--json-output", "--dry-run",
+        "--destdir", str(tmp_path), "--no-lock",
+    ])
+    monkeypatch.setattr(fetcher, "find_ia_executable", lambda custom=None: "ia")
+    monkeypatch.setattr(fetcher, "get_collection_items", lambda ia, cid, query="": ["item-a", "item-b"])
+    monkeypatch.setattr(fetcher, "get_manifest", lambda item_id, dest, force_update=False, primary=True: {})
+    fetcher._shutdown_event.clear()
+
+    fetcher.main()
+
+    import json
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    meta = [e for e in events if e["type"] == "metadata_progress"]
+    assert {"type": "phase", "phase": "searching"}.items() <= next(e for e in events if e["type"] == "phase").items()
+    # One event per fetched item; manifests arrive in completion order, so only the
+    # running count is ordered.
+    assert [(e["items_done"], e["items_total"]) for e in meta] == [(1, 2), (2, 2)]
+    assert sorted(e["item"] for e in meta) == ["item-a", "item-b"]
+
+
+def test_init_logging_drops_handlers_installed_before_it(tmp_path):
+    """A logging call before init_logging auto-installs a bare stderr handler;
+    keeping it printed every line twice ("INFO:root:..."), doubling the UI log."""
+    import logging
+
+    root = logging.getLogger()
+    saved = list(root.handlers)
+    try:
+        early = logging.StreamHandler()
+        root.addHandler(early)
+
+        fetcher.init_logging(tmp_path)
+
+        assert early not in root.handlers
+        assert len(root.handlers) == 2  # ia_download.log + stdout
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+        for handler in saved:
+            root.addHandler(handler)
+
+
+def test_collection_manifests_are_fetched_concurrently(monkeypatch, tmp_path):
+    """Manifests load --concurrency at a time, and collection items leave metadata.json alone."""
+    import threading
+
+    monkeypatch.setenv("IA_HEALTH_PORT", "0")
+    monkeypatch.setattr(sys, "argv", [
+        "fetcher.py", "mirror", "coll", "--collection", "--dry-run", "-j", "3",
+        "--destdir", str(tmp_path), "--no-lock",
+    ])
+    monkeypatch.setattr(fetcher, "find_ia_executable", lambda custom=None: "ia")
+    monkeypatch.setattr(fetcher, "get_collection_items", lambda ia, cid, query="": ["a", "b", "c"])
+    all_started = threading.Barrier(3, timeout=5)
+    primaries = {}
+    serialized = []
+
+    def fake_get_manifest(item_id, dest, force_update=False, primary=True):
+        primaries[item_id] = primary
+        try:
+            all_started.wait()  # only passes if all three fetches are in flight at once
+        except threading.BrokenBarrierError:
+            serialized.append(item_id)
+        return {}
+
+    monkeypatch.setattr(fetcher, "get_manifest", fake_get_manifest)
+    fetcher._shutdown_event.clear()
+
+    fetcher.main()
+
+    assert sorted(primaries) == ["a", "b", "c"]
+    assert serialized == [], "manifests were fetched one at a time"
+    assert not any(primaries.values()), "collection items must not overwrite metadata.json"
+
+
+def test_search_mirrors_every_hit_into_the_label_folder(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("IA_HEALTH_PORT", "0")
+    monkeypatch.setattr(sys, "argv", [
+        "fetcher.py", "mirror", "search-drone", "--search", "(drone)", "--json-output", "--dry-run",
+        "--destdir", str(tmp_path), "--no-lock",
+    ])
+    monkeypatch.setattr(fetcher, "find_ia_executable", lambda custom=None: "ia")
+    searched = []
+    monkeypatch.setattr(fetcher, "search_items", lambda ia, query: searched.append(query) or ["hit-1", "hit-2"])
+    fetched = []
+    monkeypatch.setattr(fetcher, "get_manifest",
+                        lambda item_id, dest, force_update=False, primary=True: fetched.append(item_id) or {})
+    fetcher._shutdown_event.clear()
+
+    fetcher.main()
+
+    assert searched == ["(drone)"]
+    assert sorted(fetched) == ["hit-1", "hit-2"]
+
+
+def test_search_with_no_hits_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("IA_HEALTH_PORT", "0")
+    monkeypatch.setattr(sys, "argv", [
+        "fetcher.py", "mirror", "search-x", "--search", "(nothing)", "--destdir", str(tmp_path), "--no-lock",
+    ])
+    monkeypatch.setattr(fetcher, "find_ia_executable", lambda custom=None: "ia")
+    monkeypatch.setattr(fetcher, "search_items", lambda ia, query: [])
+    fetcher._shutdown_event.clear()
+
+    assert fetcher.main() == 1
+
+
+def test_search_and_collection_are_exclusive(monkeypatch, tmp_path):
+    monkeypatch.setenv("IA_HEALTH_PORT", "0")
+    monkeypatch.setattr(sys, "argv", [
+        "fetcher.py", "mirror", "coll", "--collection", "--search", "(x)", "--destdir", str(tmp_path),
+    ])
+    with pytest.raises(SystemExit) as exc:
+        fetcher.main()
+    assert exc.value.code == 2

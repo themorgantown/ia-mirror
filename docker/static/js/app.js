@@ -22,8 +22,15 @@ class IAMirrorUI {
             remainingBytesEstimate: null,
             etaSeconds: null,
             speedMBps: 0,
-            speedText: '0 MB/s'
+            speedText: '0 MB/s',
+            phase: null,
+            metaDone: 0,
+            metaTotal: null,
+            metaItem: '',
+            searchLabel: ''
         };
+        this.trackedJobId = null;
+        this.log = this.emptyLogState(null);
 
         this.setupEventListeners();
         this.setupSocketListeners();
@@ -74,6 +81,7 @@ class IAMirrorUI {
         document.getElementById('save-settings-btn')?.addEventListener('click', () => this.saveSettings());
         document.getElementById('clear-history-btn')?.addEventListener('click', () => this.clearHistory());
         this.setupCopyEnvBtn();
+        this.setupLogControls();
     }
 
     setupSocketListeners() {
@@ -99,9 +107,10 @@ class IAMirrorUI {
         });
 
         this.socket.on('job_progress', (data) => {
-            console.log('Progress:', data);
             this.updateProgress(data.progress);
         });
+
+        this.socket.on('log_line', (data) => this.appendLog(data));
     }
 
     
@@ -111,18 +120,24 @@ class IAMirrorUI {
 
     validateBatchInput() {
         const text = document.getElementById('batch-input')?.value || '';
-        // Split by newlines, commas, or spaces
-        const tokens = text.split(/[\s,]+/).filter(t => t.trim() && !t.trim().startsWith('#'));
+        // Same tokenizing as the server (parsing.py): whitespace, then commas -
+        // except inside URLs, whose filters can contain commas.
+        const tokens = text.split('\n')
+            .filter(line => !line.trim().startsWith('#'))
+            .flatMap(line => line.split(/\s+/))
+            .flatMap(part => (part.includes('://') || part.includes('archive.org/')) ? [part] : part.split(','))
+            .filter(t => t.trim());
 
         let valid = 0, invalid = 0;
         const urlRegex = /archive\.org\/details\/([a-zA-Z0-9_\-\.]+)/;
+        const searchRegex = /archive\.org\/search(?:\.php)?\?.*\bquery=[^&]/;
         const idRegex = /^[a-zA-Z0-9_\-\.]+$/;
 
         for (const token of tokens) {
             const trimmed = token.trim();
             // Check for URL extraction first
             const match = trimmed.match(urlRegex);
-            if (match && match[1]) {
+            if ((match && match[1]) || (searchRegex.test(trimmed) && !/[?&]sin=[^&]/.test(trimmed))) {
                 valid++;
             } else if (idRegex.test(trimmed)) {
                 valid++;
@@ -343,12 +358,21 @@ class IAMirrorUI {
 
         const config = this.getConfig();
         const operation = document.getElementById('operation')?.value || 'download';
+        const startBtn = document.getElementById('start-download-btn');
+        if (startBtn) {
+            startBtn.disabled = true;
+            startBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Checking...';
+        }
+
+        const collectionIds = await this.resolveCollections(text, config);
+        if (collectionIds === null) {
+            this.setActionStatus('Cancelled. Nothing was queued.', 'info');
+            this.updateUIState();
+            return;
+        }
 
         try {
-            // Disable start button during submission
-            const startBtn = document.getElementById('start-download-btn');
             if (startBtn) {
-                startBtn.disabled = true;
                 startBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
             }
 
@@ -358,7 +382,8 @@ class IAMirrorUI {
                 body: JSON.stringify({
                     text,
                     operation,
-                    config
+                    config,
+                    collection_ids: collectionIds
                 })
             });
 
@@ -391,6 +416,101 @@ class IAMirrorUI {
                 startBtn.innerHTML = '<svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16" class="me-2"><path d="M10.804 8L5 4.633v6.734L10.804 8z"/></svg>Start Download';
             }
         }
+    }
+
+    // Expanding a collection into all of its items is opt-in: ask first.
+    // Resolves to the identifiers to run in collection mode, or null if cancelled.
+    async resolveCollections(text, config) {
+        if (config.collection_mode) return [];  // Advanced > Collection Mode already opts in to everything
+
+        let entries = [];
+        try {
+            const response = await fetch('/api/inspect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            if (response.ok) entries = (await response.json()).entries || [];
+        } catch (error) {
+            console.warn('Collection check failed; queuing input as plain items.', error);
+        }
+
+        // Search-page URLs always download their results; they are listed so the
+        // item count gets a look before a possibly huge job starts.
+        const prompts = entries.filter(entry => entry.is_collection || entry.is_search);
+        if (!prompts.length) return [];
+
+        const choice = await this.askCollectionMode(prompts);
+        const collectionIds = [...new Set(prompts.filter(p => p.is_collection).map(p => p.identifier))];
+        if (choice === 'all') return collectionIds;
+        return choice === 'metadata' ? [] : null;
+    }
+
+    // Shows the "Collection detected" dialog for collections and search-page URLs.
+    // Resolves 'all', 'metadata', or null (cancel).
+    askCollectionMode(entries) {
+        const modalEl = document.getElementById('collectionModal');
+        if (!modalEl || typeof bootstrap === 'undefined') return Promise.resolve('metadata');
+
+        const collections = entries.filter(e => e.is_collection);
+        const searches = entries.filter(e => e.is_search);
+        const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+        const counts = entries.map(e => e.item_count);
+        const total = counts.every(Number.isFinite) ? counts.reduce((a, b) => a + b, 0) : null;
+
+        let title;
+        let question;
+        if (!collections.length) {
+            title = 'Search results detected';
+            question = searches.length > 1
+                ? 'Do you want to download all items matching these searches?'
+                : 'Do you want to download all items matching this search?';
+        } else if (collections.length === 1 && !searches.length) {
+            title = 'Collection detected';
+            question = 'Do you want to download all items in that collection?';
+        } else {
+            title = `${entries.length} collections or searches detected`;
+            question = 'Do you want to download all of their items?';
+        }
+        document.getElementById('collection-modal-title').textContent = title;
+        document.getElementById('collection-modal-question').textContent = question;
+        document.getElementById('collection-list').innerHTML = entries.map(e => `
+            <li class="collection-entry">
+                <div class="collection-entry-title">${this.escapeHtml(e.title || e.identifier)}</div>
+                <div class="collection-entry-meta font-monospace">${e.is_search ? 'saves to ' : ''}${this.escapeHtml(e.identifier)}${
+                    Number.isFinite(e.item_count) ? ` &middot; ${plural(e.item_count, 'item')}` : ''}</div>
+                ${e.query ? `<div class="collection-entry-filter font-monospace">${e.is_search ? 'query' : 'filter'}: ${this.escapeHtml(e.query)}</div>` : ''}
+            </li>`).join('');
+
+        // "Metadata only" means a collection's own page files; a search has no such item.
+        const note = document.getElementById('collection-modal-note');
+        if (note) {
+            note.hidden = !collections.length;
+            note.textContent = searches.length
+                ? "Metadata only downloads just each collection's own page files; search results are always downloaded in full."
+                : "Otherwise only the collection's own page files (its metadata) are downloaded.";
+        }
+
+        const allBtn = document.getElementById('collection-all-btn');
+        const metaBtn = document.getElementById('collection-metadata-btn');
+        metaBtn.hidden = !collections.length;
+        allBtn.textContent = total === null ? 'Download all items' : `Download all ${plural(total, 'item')}`;
+        allBtn.disabled = total === 0;  // a filter that matches nothing would fail the job
+
+        return new Promise((resolve) => {
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            let choice = null;
+            const onAll = () => { choice = 'all'; modal.hide(); };
+            const onMeta = () => { choice = 'metadata'; modal.hide(); };
+            allBtn.addEventListener('click', onAll);
+            metaBtn.addEventListener('click', onMeta);
+            modalEl.addEventListener('hidden.bs.modal', () => {
+                allBtn.removeEventListener('click', onAll);
+                metaBtn.removeEventListener('click', onMeta);
+                resolve(choice);
+            }, { once: true });
+            modal.show();
+        });
     }
 
     async stopJob() {
@@ -451,6 +571,14 @@ class IAMirrorUI {
         if (data.active_job && data.active_job.status === 'running') {
             this.currentJob = data.active_job;
             this.isRunning = true;
+            if (this.trackActiveJob(data.active_job.id)) {
+                // Page (re)loaded mid-job: pull the lines already written.
+                this.backfillLog(data.active_job.id);
+                const last = data.active_job.progress;
+                if (last && (last.type === 'phase' || last.type === 'metadata_progress')) {
+                    this.updateProgress(last);
+                }
+            }
             this.liveProgress.status = 'running';
             // Update job info in ASCII console
             this.liveProgress.currentFile = data.active_job.identifier || 'starting';
@@ -508,9 +636,12 @@ class IAMirrorUI {
         if (data.status === 'running') {
             this.currentJob = data;
             this.isRunning = true;
+            this.trackActiveJob(data.job_id);
             this.liveProgress.status = 'running';
         } else if (data.status === 'completed' || data.status === 'failed') {
             this.isRunning = false;
+            this.liveProgress.phase = null;
+            if (this.log.jobId === data.job_id) this.setLogState(data.status === 'completed' ? 'done' : 'failed');
             const statusMsg = data.status === 'completed' ? 'Download completed!' : 'Download failed.';
             const statusType = data.status === 'completed' ? 'success' : 'danger';
             this.setActionStatus(statusMsg, statusType);
@@ -542,6 +673,32 @@ class IAMirrorUI {
 
     updateProgress(progress) {
         const eventType = progress.type || 'progress';
+
+        // Collection mode lists the items, then fetches each item's metadata, before
+        // any file moves. Those phases get their own progress; any download event ends them.
+        if (eventType === 'phase') {
+            this.liveProgress.phase = progress.phase;
+            if (progress.phase === 'searching') {
+                this.liveProgress.searchLabel = progress.query
+                    ? `${progress.identifier} (filtered)`
+                    : (progress.identifier || '');
+            }
+            if (progress.items_total) {
+                this.liveProgress.metaTotal = Number(progress.items_total);
+                this.liveProgress.metaDone = 0;
+            }
+            this.updateAsciiConsole(this.queueLength);
+            return;
+        }
+        if (eventType === 'metadata_progress') {
+            this.liveProgress.phase = 'metadata';
+            this.liveProgress.metaDone = Number(progress.items_done || 0);
+            this.liveProgress.metaTotal = Number(progress.items_total || 0) || null;
+            this.liveProgress.metaItem = progress.item || '';
+            this.updateAsciiConsole(this.queueLength);
+            return;
+        }
+        this.liveProgress.phase = null;
 
         if (eventType === 'dry_run_summary') {
             this.liveProgress.filesTotal = Number(progress.files_total || 0) || null;
@@ -644,9 +801,24 @@ class IAMirrorUI {
             remainingBytesEstimate: null,
             etaSeconds: null,
             speedMBps: 0,
-            speedText: '0 MB/s'
+            speedText: '0 MB/s',
+            phase: null,
+            metaDone: 0,
+            metaTotal: null,
+            metaItem: '',
+            searchLabel: ''
         };
         this.updateAsciiConsole(this.queueLength);
+    }
+
+    // Start tracking a newly active job: fresh progress and a fresh log.
+    // Returns true when jobId is a job we were not already tracking.
+    trackActiveJob(jobId) {
+        if (jobId == null || jobId === this.trackedJobId) return false;
+        this.trackedJobId = jobId;
+        this.resetLiveProgress('running');
+        this.startLog(jobId);
+        return true;
     }
 
     estimatedBytesDone() {
@@ -695,7 +867,14 @@ class IAMirrorUI {
         const remainingBytes = this.estimatedRemainingBytes();
         const totalBytes = this.estimatedTotalBytes();
 
-        const percent = totalBytes > 0 ? Math.max(0, Math.min(100, Math.round((doneBytes / totalBytes) * 100))) : 0;
+        const phase = this.isRunning ? this.liveProgress.phase : null;
+        const { metaDone, metaTotal } = this.liveProgress;
+        if (phase === 'searching') displayStatus = 'searching collection';
+        if (phase === 'metadata') displayStatus = 'fetching metadata';
+
+        let percent = totalBytes > 0 ? Math.max(0, Math.min(100, Math.round((doneBytes / totalBytes) * 100))) : 0;
+        if (phase === 'metadata') percent = metaTotal > 0 ? Math.round((metaDone / metaTotal) * 100) : 0;
+        if (phase === 'searching') percent = 0;
         const bar = this.buildAsciiBar(percent, 20);
 
         let filesRemaining = '--';
@@ -714,18 +893,33 @@ class IAMirrorUI {
         
         const currentFile = this.liveProgress.currentFile || '--';
 
+        const row = (label, value) => ` ${label.padEnd(15)}: ${value}`;
+        let detailRows;
+        if (phase === 'searching') {
+            detailRows = [row('COLLECTION', (this.liveProgress.searchLabel || '--').substring(0, 40))];
+        } else if (phase === 'metadata') {
+            detailRows = [
+                row('METADATA', `${metaDone} / ${metaTotal ?? '?'} items`),
+                row('LAST FETCHED', (this.liveProgress.metaItem || '--').substring(0, 40))
+            ];
+        } else {
+            detailRows = [
+                this.isRunning ? row('CURRENT FILE', currentFile.substring(0, 40)) : null,
+                row('FILES REMAIN', filesRemaining),
+                row('TIME REMAIN', etaText),
+                row('DATA REMAIN', remainText),
+                row('SPEED', speedText)
+            ];
+        }
+
         const lines = [
             '+------------------------------------------+',
             ' IA-MIRROR PROGRESS',
             '+------------------------------------------+',
-            ` STATUS         : ${displayStatus}`,
-            queueInfo ? ` QUEUE         : ${queueInfo}` : null,
-            this.isRunning ? ` CURRENT FILE  : ${currentFile.substring(0, 40)}` : null,
-            ` FILES REMAIN   : ${filesRemaining}`,
-            ` TIME REMAIN    : ${etaText}`,
-            ` DATA REMAIN    : ${remainText}`,
-            ` SPEED          : ${speedText}`,
-            ` PROGRESS       : [${bar}] ${percent}%`,
+            row('STATUS', displayStatus),
+            queueInfo ? row('QUEUE', queueInfo) : null,
+            ...detailRows,
+            row('PROGRESS', `[${bar}] ${percent}%`),
             '+------------------------------------------+'
         ].filter(line => line !== null);
 
@@ -834,7 +1028,221 @@ class IAMirrorUI {
         }
     }
 
+    // ============ Live Log ============
+    // Streams the active job's log over Socket.IO ('log_line'). Lines carry their
+    // storage id, so a backfill after a page reload and the live stream never
+    // render the same line twice.
+
+    emptyLogState(jobId) {
+        return { jobId, lastId: 0, lines: 0, warnings: 0, errors: 0, pending: [], loading: false, flushQueued: false };
+    }
+
+    setupLogControls() {
+        const logEl = document.getElementById('live-log');
+        const follow = document.getElementById('live-log-follow');
+
+        document.getElementById('live-log-level')?.addEventListener('change', (event) => {
+            logEl?.classList.toggle('only-problems', event.target.value === 'problems');
+            this.scrollLogIfFollowing();
+        });
+        document.getElementById('live-log-search')?.addEventListener('input', () => this.applyLogSearch());
+        follow?.addEventListener('change', () => this.scrollLogIfFollowing());
+        // Scrolling up to read pauses Follow; scrolling back to the bottom resumes it.
+        logEl?.addEventListener('scroll', () => {
+            if (follow) follow.checked = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24;
+        });
+        document.getElementById('live-log-copy')?.addEventListener('click', () => this.copyLog());
+    }
+
+    startLog(jobId) {
+        this.log = this.emptyLogState(jobId);
+        const logEl = document.getElementById('live-log');
+        if (logEl) logEl.textContent = '';
+        const download = document.getElementById('live-log-download');
+        if (download) {
+            download.href = `/api/jobs/${jobId}/log`;
+            download.hidden = false;
+        }
+        this.setLogState('live');
+        this.updateLogCounts();
+    }
+
+    async backfillLog(jobId) {
+        this.log.loading = true;
+        try {
+            const response = await fetch(`/api/jobs/${jobId}/logs`);
+            if (response.ok && this.log.jobId === jobId) {
+                const { logs = [] } = await response.json();
+                const earlier = logs.map(l => ({ job_id: jobId, id: l.id, line: l.line, timestamp: l.ts }));
+                this.log.pending.unshift(...earlier);
+            }
+        } catch (error) {
+            console.warn('Could not load earlier log lines', error);
+        }
+        if (this.log.jobId === jobId) {
+            this.log.loading = false;
+            this.scheduleLogFlush();
+        }
+    }
+
+    appendLog(data) {
+        if (!data || data.job_id == null) return;
+        if (this.log.jobId !== data.job_id) this.trackActiveJob(data.job_id);
+        this.log.pending.push(data);
+        this.scheduleLogFlush();
+    }
+
+    // Batch DOM writes to one per frame: a fast download can emit hundreds of lines a second.
+    scheduleLogFlush() {
+        if (this.log.flushQueued) return;
+        this.log.flushQueued = true;
+        requestAnimationFrame(() => this.flushLog());
+    }
+
+    flushLog() {
+        this.log.flushQueued = false;
+        const logEl = document.getElementById('live-log');
+        if (!logEl || this.log.loading || !this.log.pending.length) return;
+
+        const panel = document.getElementById('live-log-panel');
+        if (panel) panel.hidden = false;
+
+        const query = this.logSearchQuery();
+        const fragment = document.createDocumentFragment();
+        for (const entry of this.log.pending.splice(0)) {
+            if (entry.id != null) {
+                if (entry.id <= this.log.lastId) continue;
+                this.log.lastId = entry.id;
+            }
+            fragment.appendChild(this.renderLogLine(entry, query));
+        }
+        logEl.appendChild(fragment);
+
+        const excess = logEl.childElementCount - IAMirrorUI.LOG_MAX_LINES;
+        for (let i = 0; i < excess; i++) logEl.firstElementChild.remove();
+
+        this.updateLogCounts();
+        this.scrollLogIfFollowing();
+    }
+
+    // Python logging lines look like "2026-10-05 12:00:01 WARNING message".
+    classifyLogLine(raw) {
+        const match = /^(?:\d{4}-\d{2}-\d{2}[ T])?(\d{2}:\d{2}:\d{2})(?:[.,]\d+)?\s+(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\s+(.*)$/.exec(raw);
+        if (match) {
+            const level = { WARNING: 'warning', WARN: 'warning', CRITICAL: 'error' }[match[2]] || match[2].toLowerCase();
+            return { time: match[1], level, message: match[3] };
+        }
+        let level = 'info';
+        if (/❌|\bERROR\b|Traceback/.test(raw)) level = 'error';
+        else if (/⚠|\bWARN(?:ING)?\b/.test(raw)) level = 'warning';
+        else if (/✅|✓/.test(raw)) level = 'success';
+        else if (/\bDEBUG\b/.test(raw)) level = 'debug';
+        return { time: null, level, message: raw };
+    }
+
+    renderLogLine(entry, query) {
+        const { time, level, message } = this.classifyLogLine(entry.line || '');
+        this.log.lines += 1;
+        if (level === 'warning') this.log.warnings += 1;
+        if (level === 'error') this.log.errors += 1;
+
+        const row = document.createElement('div');
+        row.className = `log-line log-${level}`;
+        row.dataset.raw = entry.line || '';
+        if (query && !row.dataset.raw.toLowerCase().includes(query)) row.hidden = true;
+
+        const timeEl = document.createElement('span');
+        timeEl.className = 'log-time';
+        // Prefer the receive time in the viewer's timezone: the container logs in UTC,
+        // and mixing the two clocks made adjacent lines look hours apart.
+        timeEl.textContent = this.formatClock(entry.timestamp) || time || '';
+        const levelEl = document.createElement('span');
+        levelEl.className = 'log-level';
+        levelEl.textContent = { info: 'INFO', warning: 'WARN', error: 'ERR', debug: 'DBG', success: 'OK' }[level];
+        const messageEl = document.createElement('span');
+        messageEl.className = 'log-msg';
+        messageEl.textContent = message;
+
+        row.append(timeEl, levelEl, messageEl);
+        return row;
+    }
+
+    logSearchQuery() {
+        return (document.getElementById('live-log-search')?.value || '').trim().toLowerCase();
+    }
+
+    applyLogSearch() {
+        const query = this.logSearchQuery();
+        for (const row of document.getElementById('live-log')?.children || []) {
+            row.hidden = Boolean(query) && !row.dataset.raw.toLowerCase().includes(query);
+        }
+    }
+
+    scrollLogIfFollowing() {
+        const logEl = document.getElementById('live-log');
+        if (logEl && document.getElementById('live-log-follow')?.checked) {
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+    }
+
+    updateLogCounts() {
+        const el = document.getElementById('live-log-counts');
+        if (!el) return;
+        const { lines, warnings, errors } = this.log;
+        const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+        const parts = [plural(lines, 'line')];
+        if (warnings) parts.push(plural(warnings, 'warning'));
+        if (errors) parts.push(plural(errors, 'error'));
+        if (lines > IAMirrorUI.LOG_MAX_LINES) parts.push(`showing last ${IAMirrorUI.LOG_MAX_LINES}`);
+        el.textContent = parts.join(' · ');
+    }
+
+    setLogState(state) {
+        const el = document.getElementById('live-log-state');
+        if (!el) return;
+        el.dataset.state = state;
+        el.textContent = state;
+    }
+
+    async copyLog() {
+        const rows = document.getElementById('live-log')?.children || [];
+        const text = Array.from(rows, row => row.dataset.raw).join('\n');
+        const btn = document.getElementById('live-log-copy');
+        const ok = await this.copyText(text);
+        if (btn) {
+            btn.textContent = ok ? 'Copied!' : 'Copy failed';
+            setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+        }
+    }
+
+    // navigator.clipboard only exists in secure contexts; the UI is often
+    // opened over plain http on a LAN address, so fall back to execCommand.
+    async copyText(text) {
+        try {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+                return true;
+            }
+        } catch (error) {
+            console.warn('Clipboard API failed, falling back', error);
+        }
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+    }
+
     // ============ Utilities ============
+
+    formatClock(epochSeconds) {
+        if (!epochSeconds) return '';
+        return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour12: false });
+    }
 
 
     parseSpeed(speedText) {
@@ -870,6 +1278,9 @@ class IAMirrorUI {
         return `${(h / 24).toFixed(1)}d`;
     }
 }
+
+// The log keeps the newest lines only, so a long collection run can't bloat the page.
+IAMirrorUI.LOG_MAX_LINES = 2000;
 
 // Initialize
 let ui;

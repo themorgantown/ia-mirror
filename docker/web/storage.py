@@ -404,15 +404,15 @@ class JobStorage:
                 """
             )
 
-    def append_job_log(self, job_id, line: str):
-        """Append a log line for a job and prune to the last 500 rows."""
+    def append_job_log(self, job_id, line: str) -> int:
+        """Append a log line for a job, prune to the last 500 rows, return the line's id."""
         import time as _time
         ts = _time.time()
         with self._get_conn() as conn:
-            conn.execute(
+            log_id = conn.execute(
                 "INSERT INTO job_logs (job_id, line, ts) VALUES (?, ?, ?)",
                 (str(job_id), line, ts)
-            )
+            ).lastrowid
             conn.execute(
                 """
                 DELETE FROM job_logs
@@ -428,15 +428,16 @@ class JobStorage:
                 """,
                 (str(job_id), str(job_id))
             )
+        return log_id
 
     def get_job_logs(self, job_id) -> List[Dict]:
         """Return log lines for a job, ordered oldest-first."""
         with self._get_conn() as conn:
             rows = conn.execute(
-                "SELECT line, ts FROM job_logs WHERE job_id = ? ORDER BY ts ASC",
+                "SELECT id, line, ts FROM job_logs WHERE job_id = ? ORDER BY id ASC",
                 (str(job_id),)
             ).fetchall()
-            return [{"line": row["line"], "ts": row["ts"]} for row in rows]
+            return [{"id": row["id"], "line": row["line"], "ts": row["ts"]} for row in rows]
 
 
     def reset_stuck_jobs(self):

@@ -1,6 +1,23 @@
 # Changelog
 
-## [1.1.9] - 2026-10-05
+## [1.2.0] - 2026-10-05
+
+### Added
+- **Collection detection in the Web UI.** Pasting a collection URL or identifier (for example `https://archive.org/details/hvconnectdrone`) now asks "Collection detected, do you want to download all items in that collection?" before starting, and shows the item count. **Download all items** runs the job in collection mode; **Metadata only** keeps the old behavior of fetching just the collection's own page files. Previously a pasted collection silently downloaded only that metadata unless you had found the Collection Mode checkbox under Advanced. Collection mode stays off unless you choose it.
+- **Filtered collection URLs.** A collection URL that carries archive.org search filters (`?and[]=subject:"Poughkeepsie"`, `not[]=...`, `query=...`) now downloads only the matching items. Filters are translated with archive.org's own semantics: several values of one field are ORed and different fields are ANDed. This was checked against archive.org, where Poughkeepsie + Summer on `hvconnectdrone` gives 380 results, the OR count. Item counts come from archive.org's search engine, which matches subject phrases a little more loosely than the website's facet checkboxes, so multi-word subjects can be off by a few items.
+- **Search-page URLs.** Pasting an `archive.org/search?query=...` URL, facet filters included, downloads every matching item into `/downloads/search-<query>/<item>/` (for example `search-poughkeepsie-drone`). The UI confirms the result count first. On the CLI this is `fetcher.py --search QUERY`, where the identifier only names the folder. A search with no results fails the run. Full-text, TV-caption and radio searches (`sin=`) are rejected, because `ia search` cannot query those indexes.
+- `fetcher.py --query QUERY` narrows `--collection` to items matching a search query. It requires `--collection`, and a query that matches nothing fails the run instead of falling back to downloading the collection's own item.
+- `POST /api/inspect` reports, per input line, the identifier, URL filter, whether it is a collection or a search page, and the matching item count. `/api/queue/add` and `/api/job/start` accept `collection_ids` to choose which collections to expand.
+- **Live Log panel.** It appears as soon as a job starts writing and streams the log over the existing `log_line` Socket.IO event. The UI previously received that event but never displayed it. Lines are color-coded by level, with a warnings-and-errors filter, text search, Follow (pauses when you scroll up), Copy, and a download link for the job's `ia_download.log`. A page reload mid-job restores the recent lines without duplicates, keyed by log line id. It keeps the newest 2,000 lines.
+- **Collection progress.** The progress console now shows `searching collection`, then `fetching metadata` with an `N / total items` counter and the last item fetched, while a collection or search job lists its items and fetches their manifests. Before, it sat at 0% for this whole phase, which takes about 80 seconds for 90 items.
+- Collection and search runs fetch item manifests `--concurrency` at a time instead of one by one. The gain is modest: archive.org's metadata API answers a short burst at once, then about one request per second per client (measured 2026-10-05). So this mostly shortens the start of a large collection, and big runs still take roughly a second per item.
+
+### Fixed
+- Every fetcher log line was printed twice, once as `INFO:root:...`. That doubled the Web UI log and container output. The health-check server logged before logging was configured, which made Python install a default stderr handler, and `init_logging` now clears it.
+- Batch input split archive.org URLs at commas, breaking filters such as `subject:"Hudson, NY"`. URLs are now kept whole.
+- The progress console now resets when the next queued job starts, instead of carrying the previous job's file counts over.
+- Progress console labels are aligned (`QUEUE` and `CURRENT FILE` were one column short).
+- Collection runs overwrote `.ia_status/metadata.json` once per item, so it ended up holding the last item's manifest. It is now written only for the identifier being mirrored, which also keeps the parallel manifest fetches from writing it concurrently.
 
 ### Dependencies
 - Bump base image `python` 3.14.7-alpine3.24 → 3.14.8-alpine3.24 (Alpine 3.24.2). Python 3.15.0 is still at rc2, so the 3.14 line is held
@@ -15,6 +32,15 @@
 - Bump `anchore/sbom-action` 0.24.0 → 0.24.3. These are maintenance releases with no input changes
 - `actions/checkout` 7.0.1, `actions/setup-python` 7.0.0, `actions/upload-artifact` 7.0.1, `docker/login-action` 4.6.0, `hadolint/hadolint-action` 3.5.0, `peter-evans/create-issue-from-file` 6.0.0, and `peter-evans/dockerhub-description` 5.0.0 are already at their latest releases
 - All actions remain pinned to immutable commit SHAs
+
+### Documentation
+- Re-audited "What ia-mirror Adds Beyond `internetarchive`" against `internetarchive` 5.11.1 and the code:
+  - The Web UI row claimed a file browser, job history, and queue reorder/delete controls. Those exist only as REST endpoints, and the row now says so.
+  - The backoff row said ia-mirror backs off on HTTP 429/5xx. It actually backs off on any failed download attempt, timeouts included. The row also omitted that upstream already retries each request on 429/500-504 with exponential backoff.
+  - "Unraid-oriented defaults" is dropped, because the repo ships no Unraid template.
+  - `WEB_*` variables are server settings, not env-to-argument injection.
+  - A new row covers collection, filtered-collection, and search-page URLs, against upstream's `ia download --search`.
+- Documented collection prompts, filtered and search-page URLs, the live log, `/api/inspect`, `collection_ids`, and `--collection --query` / `--search` CLI examples.
 
 ## [1.1.8] - 2026-08-24
 

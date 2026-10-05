@@ -340,7 +340,7 @@ def calculate_checksum(path: Path, algo: str = "md5") -> str:
     except Exception:
         return ""
 
-def get_manifest(identifier: str, dest: Path, force_update: bool = False) -> dict:
+def get_manifest(identifier: str, dest: Path, force_update: bool = False, primary: bool = True) -> dict:
     """Fetch and cache item metadata. Returns a dict mapping filename -> metadata dict."""
     sd = status_dir_for(dest)
     # We use a per-identifier manifest to support collections correctly
@@ -369,12 +369,14 @@ def get_manifest(identifier: str, dest: Path, force_update: bool = False) -> dic
             tmp.write_text(json.dumps(manifest, indent=2))
             tmp.replace(manifest_path)
             
-            # Also maintain a generic metadata.json for the primary identifier if requested
-            primary_manifest = sd / "metadata.json"
-            try:
-                shutil.copy2(manifest_path, primary_manifest)
-            except Exception:
-                pass
+            # Also maintain a generic metadata.json for the primary identifier. Collection
+            # items must not: they overwrote it item by item, concurrently once manifests
+            # were fetched in parallel.
+            if primary:
+                try:
+                    shutil.copy2(manifest_path, sd / "metadata.json")
+                except Exception:
+                    pass
         except Exception as e:
             if manifest_path.exists():
                 logging.warning("Failed to fetch metadata for %s; using cached version. Error: %s", identifier, e)
@@ -387,7 +389,7 @@ def get_manifest(identifier: str, dest: Path, force_update: bool = False) -> dic
             manifest = json.loads(manifest_path.read_text())
         except Exception as e:
             logging.warning("Cached manifest for %s is corrupt, re-fetching... (%s)", identifier, e)
-            return get_manifest(identifier, dest, force_update=True)
+            return get_manifest(identifier, dest, force_update=True, primary=primary)
             
     return manifest
 
@@ -399,6 +401,11 @@ def init_logging(dest: Path) -> None:
     level = getattr(logging, level_name, logging.INFO)
 
     logger = logging.getLogger()
+    # Anything logged before this point (the health-check server's start message)
+    # made logging auto-install a bare stderr handler, which then printed every line
+    # a second time as "INFO:root:...". Start from a clean root logger.
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
     logger.setLevel(level)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
@@ -472,9 +479,13 @@ def get_file_list(manifest: dict, include_globs: List[str]|None=None,
     
     return acc
 
-def get_collection_items(ia: str, collection_id: str) -> List[str]:
-    r = run_cmd([ia, "search", f'collection:"{collection_id}"', "--itemlist"])
+def search_items(ia: str, query: str) -> List[str]:
+    r = run_cmd([ia, "search", query, "--itemlist"])
     return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()] if r.returncode == 0 else []
+
+def get_collection_items(ia: str, collection_id: str, query: str = "") -> List[str]:
+    from web.parsing import collection_search_query
+    return search_items(ia, collection_search_query(collection_id, query))
 
 def verify_local_file(filename: str, local_path: Path, manifest_entry: dict, verify_mode: str = "size") -> bool:
     """Verify a local file against manifest metadata (exists, size, or checksum)."""
@@ -1230,6 +1241,8 @@ def build_parser():
     basic_group.add_argument("-f","--format", dest="formats", action="append", default=[], help="Restrict to extensions (e.g., mp3,flac); can be repeated or comma-separated")
     basic_group.add_argument("-j","--concurrency", type=int, default=4, help="Parallel workers (default 4)")
     basic_group.add_argument("--collection", action="store_true", help="Treat identifier as collection")
+    basic_group.add_argument("--query", default="", help='With --collection, only mirror items matching this archive.org search query, e.g. subject:"Poughkeepsie"')
+    basic_group.add_argument("--search", default="", help="Mirror every item matching this archive.org search query; the identifier only names the destination folder")
     basic_group.add_argument("--verify-mode", choices=["exists", "size", "checksum"], help="Verification level: exists, size (default), or checksum")
     basic_group.add_argument("--checksum", action="store_true", help="Enable checksum verification (alias for --verify-mode checksum)")
     basic_group.add_argument("--sync", action="store_true", help="Advanced Sync: delete local files not present in remote IA item")
@@ -1388,6 +1401,10 @@ def main():
 
     if not args.identifier and not args.print_effective_config and not args.use_batch_source:
         ap.error("identifier required unless --print-effective-config")
+    if args.query and not args.collection:
+        ap.error("--query narrows a collection; add --collection")
+    if args.search and args.collection:
+        ap.error("--search queries all of archive.org; to search inside a collection use --collection --query")
 
     # Batch mode: spawn sub-invocations for each row to avoid shared global state
     if args.use_batch_source and not args.print_effective_config:
@@ -1461,6 +1478,7 @@ def main():
             # Common flags
             cmd += ["--retries", str(args.retries), "--progress-timeout", str(args.progress_timeout), "--max-timeout", str(args.max_timeout)]
             if args.collection: cmd.append("--collection")
+            if args.query: cmd += ["--query", args.query]
             if args.resumefolders: cmd.append("--resumefolders")
             if args.dry_run: cmd.append("--dry-run")
             if args.verify_only: cmd.append("--verify-only")
@@ -1589,6 +1607,8 @@ def main():
         "progress_timeout": args.progress_timeout,
         "max_timeout": args.max_timeout,
         "collection": args.collection,
+        "query": args.query,
+        "search": args.search,
         "resumefolders": args.resumefolders,
         "dry_run": args.dry_run,
         "verify_only": args.verify_only,
@@ -1622,8 +1642,29 @@ def main():
     status = load_status(identifier, dest)
     
     # Smart collection/item detection with fallback
-    if args.collection:
-        items = get_collection_items(ia, identifier)
+    if args.search:
+        logging.info("Searching archive.org for items matching: %s", args.search)
+        if _json_output:
+            _print_json("phase", {"phase": "searching", "identifier": identifier, "query": args.search})
+        items = search_items(ia, args.search)
+        if not items:
+            logging.error("No archive.org items match: %s", args.search)
+            return 1
+        # The identifier is only a folder label, so every hit is laid out as a sub-item.
+        items = [item for item in items if item != identifier]
+    elif args.collection:
+        if args.query:
+            logging.info("Searching collection '%s' for items matching: %s", identifier, args.query)
+        else:
+            logging.info("Listing items in collection '%s'...", identifier)
+        if _json_output:
+            _print_json("phase", {"phase": "searching", "identifier": identifier, "query": args.query})
+        items = get_collection_items(ia, identifier, args.query)
+        if not items and args.query:
+            # Falling back to the collection's own item would silently download the
+            # wrong thing; a filter that matches nothing is an error.
+            logging.error("No items in collection '%s' match: %s", identifier, args.query)
+            return 1
         if not items:
             logging.warning("Collection '%s' not found or contains no items. Attempting to download as single item instead.", identifier)
             items = [identifier]
@@ -1632,21 +1673,40 @@ def main():
     else:
         items = [identifier]
 
-    # Fetch manifests for all items
+    # Fetch manifests --concurrency at a time. archive.org's metadata API answers a
+    # short burst at once, then about one request per second per client (measured
+    # 2026-10-05), so this mainly shortens the start of a big collection.
     manifests = {}
-    for item_id in items:
+    multi_item = len(items) > 1
+    if _json_output and multi_item:
+        _print_json("phase", {"phase": "metadata", "items_total": len(items)})
+
+    def fetch_manifest(item_id):
+        if _shutdown_event.is_set():
+            return item_id, None
         try:
-            manifests[item_id] = get_manifest(item_id, dest, force_update=args.force_metadata_update)
+            return item_id, get_manifest(item_id, dest, force_update=args.force_metadata_update,
+                                         primary=(item_id == identifier))
         except Exception as e:
             logging.error("Could not get manifest for %s: %s", item_id, e)
-            if len(items) == 1:
-                return 1
+            return item_id, None
+
+    with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
+        futures = [pool.submit(fetch_manifest, item_id) for item_id in items]
+        for done, future in enumerate(as_completed(futures), 1):
+            item_id, manifest = future.result()
+            if manifest is not None:
+                manifests[item_id] = manifest
+            if _json_output and multi_item:
+                _print_json("metadata_progress", {"item": item_id, "items_done": done, "items_total": len(items)})
+    if len(items) == 1 and items[0] not in manifests:
+        return 1
 
     # Log what we're about to process
     if len(items) == 1 and items[0] == identifier:
         logging.info("Processing as single item: %s", identifier)
     else:
-        logging.info("Processing collection '%s' with %d items", identifier, len(items))
+        logging.info("Processing %s '%s' with %d items", "search" if args.search else "collection", identifier, len(items))
 
     collection_layout = any(item != identifier for item in items)
 
