@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.1] - 2026-10-15
+
+### Dependencies
+- Bump `Flask-SocketIO` 5.6.1 → 5.7.0. Upstream improves error handling in class-based namespaces, replaces a bare `except`, and integrates better with pytest. `ia-mirror` registers plain function handlers, not class-based namespaces, so app behavior is unchanged. 5.7.0 still requires `python-socketio>=5.12.0`, which the pinned 5.17.0 satisfies
+- Base image stays on `python` 3.14.8-alpine3.24. Python 3.15.0 is now final, but a patch release is not the place to move to a new interpreter minor, so the 3.14 line is held
+- `internetarchive` 5.11.1, `Flask` 3.1.3, `Flask-CORS` 6.0.5, `gunicorn` 26.2.0, `python-socketio` 5.17.0, `pip` 26.2.1, `pytest` 9.1.1, `pytest-flask` 1.3.0, vendored `Socket.IO` client 4.8.4, and vendored `Bootstrap` 5.3.8 are already at their latest releases. They are unchanged
+
+### CI/CD
+- Bump `actions/upload-artifact` 7.0.1 → 7.0.2 (supersedes Dependabot #63). It retries artifact transfers on HTTP 429 and honors `Retry-After`
+- `actions/checkout` 7.0.1, `actions/setup-python` 7.0.0, `anchore/sbom-action` 0.24.3, `docker/build-push-action` 7.4.0, `docker/login-action` 4.6.0, `docker/setup-buildx-action` 4.4.1, `docker/setup-qemu-action` 4.4.0, `hadolint/hadolint-action` 3.5.0, `peter-evans/create-issue-from-file` 6.0.0, and `peter-evans/dockerhub-description` 5.0.0 are already at their latest releases
+- All actions remain pinned to immutable commit SHAs
+
 ## [1.2.0] - 2026-10-05
 
 ### Added
