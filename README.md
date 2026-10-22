@@ -407,9 +407,9 @@ Per item, ia-mirror writes:
 
 ## What ia-mirror Adds Beyond `internetarchive`
 
-Upstream [`jjjake/internetarchive`](https://github.com/jjjake/internetarchive) provides the `ia` CLI and Python API for Archive.org operations. As of 5.11.1 its commands are `account`, `configure`, `copy`, `delete`, `download`, `flag`, `list`, `metadata`, `move`, `reviews`, `search`, `simplelists`, `tasks`, and `upload`. `ia-mirror` keeps `internetarchive` as its core dependency, then adds the mirroring appliance features below.
+Upstream [`jjjake/internetarchive`](https://github.com/jjjake/internetarchive) provides the `ia` CLI and Python API for Archive.org operations. As of 5.12.1 its commands are `account`, `configure`, `copy`, `delete`, `download`, `flag`, `list`, `metadata`, `move`, `reviews`, `search`, `simplelists`, `tasks`, and `upload`. `ia-mirror` keeps `internetarchive` as its core dependency, then adds the mirroring appliance features below.
 
-Comparisons in this table are against `internetarchive` 5.11.1, the version pinned in `docker/requirements.txt`.
+Comparisons in this table are against `internetarchive` 5.12.1, the version pinned in `docker/requirements.txt`.
 
 | Feature in ia-mirror | Upstream `internetarchive` status | What this project adds |
 |----------------------|-----------------------------------|------------------------|
@@ -451,7 +451,7 @@ Multi-arch release build example:
 ```bash
 docker buildx create --use --name ia-builder || true
 docker buildx build --platform linux/amd64,linux/arm64 \
-  --build-arg IA_PYPI_VERSION=5.11.1 \
+  --build-arg IA_PYPI_VERSION=5.12.1 \
   --build-arg PROJECT_VERSION=$(cat VERSION) \
   -t themorgantown/ia-mirror:$(cat VERSION) --push -f docker/Dockerfile docker
 ```

@@ -1,7 +1,7 @@
 # Production image for ia-mirror
-ARG IA_PYPI_VERSION="5.11.1"
+ARG IA_PYPI_VERSION="5.12.1"
 ARG PROJECT_VERSION="1.2.1"
-FROM python:3.14.8-alpine3.24 AS base
+FROM python:3.14.9-alpine3.24 AS base
 ARG IA_PYPI_VERSION
 ARG PROJECT_VERSION
 
