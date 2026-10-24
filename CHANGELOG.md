@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.2] - 2026-10-23
+
+### Dependencies
+- Bump `internetarchive` 5.11.1 → 5.12.1. Upstream now declares `certifi>=2026.10.19`, which drops trust in the emSign root CAs whose intermediate keys were compromised (GHSA-6q48-6c7w-9gw2), and its dependency floors pull in `urllib3` 2.8.0 past CVE-2026-97687, CVE-2026-97688 and CVE-2026-97689. The image now ships `certifi` 2026.10.19 and `urllib3` 2.8.0. `ia --insecure` now warns on every call; `ia-mirror` never passes it. The `ia` subcommand list is unchanged
+- Bump `pip` 26.2.1 → 26.2.2 (build-time only; pip is removed from the final image)
+- Bump base image `python` 3.14.8-alpine3.24 → 3.14.9-alpine3.24. The 3.14 line is still held; a patch release is not the place to move to 3.15.1
+- `Flask` 3.1.3, `Flask-CORS` 6.0.5, `Flask-SocketIO` 5.7.0, `gunicorn` 26.2.0, `python-socketio` 5.17.0, `pytest` 9.1.1, `pytest-flask` 1.3.0, vendored `Socket.IO` client 4.8.4, and vendored `Bootstrap` 5.3.8 are already at their latest releases. They are unchanged
+
+### CI/CD
+- Bump `actions/setup-python` 7.0.0 → 7.1.0. Upstream adds `mirror` inputs and clearer error messages; `ci.yml` uses neither
+- All actions remain pinned to immutable commit SHAs
+
 ## [1.2.1] - 2026-10-15
 
 ### Dependencies
