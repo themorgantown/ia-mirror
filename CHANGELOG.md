@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.3] - 2026-11-01
+
+### Dependencies
+- Bump `python-socketio` 5.17.0 → 5.17.1
+- Bump `pytest` 9.1.1 → 9.2.0 (test-only)
+- `internetarchive` 5.12.1, `pip` 26.2.2, `Flask` 3.1.3, `Flask-CORS` 6.0.5, `Flask-SocketIO` 5.7.0, `gunicorn` 26.2.0 and `pytest-flask` 1.3.0 are already at their latest releases. They are unchanged
+
 ## [1.2.2] - 2026-10-23
 
 ### Dependencies
