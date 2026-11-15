@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.4] - 2026-11-15
+
+### Dependencies
+- Bump `gunicorn` 26.2.0 → 27.0.1. Gunicorn 27 fixes request handling on kept-alive connections during `gthread` worker shutdown.
+- Bump the base image from `python:3.14.10-alpine3.24` to `python:3.15.2-alpine3.24` after verifying the application and tests on Python 3.15.
+- Bump vendored Bootstrap CSS and JavaScript 5.3.8 → 5.3.9.
+- Changes already on `main` since v1.2.3: `pip` 26.2.2 → 26.3, `Flask-SocketIO` 5.7.0 → 5.7.2, `python-socketio` 5.17.1 → 5.18.1, and the Python base image 3.14.9 → 3.14.10 before this release's Python 3.15 update.
+- `internetarchive` 5.12.1, `Flask` 3.1.3, `Flask-CORS` 6.0.5, `pytest` 9.2.0, `pytest-flask` 1.3.0, and vendored Socket.IO client 4.8.4 are current and unchanged.
+
+### CI/CD
+- `docker/login-action` 4.6.0 → 4.8.0 was merged since v1.2.3. All GitHub Actions pins were checked against their latest releases and remain pinned to immutable commit SHAs.
+
 ## [1.2.3] - 2026-11-01
 
 ### Dependencies
