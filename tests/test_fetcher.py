@@ -158,6 +158,54 @@ def test_download_single_file_retries_on_failure(monkeypatch, tmp_path):
     assert mock_ia_file.download.call_count == 3
 
 
+def test_download_single_file_subdir_does_not_touch_cwd(monkeypatch, tmp_path):
+    """Files inside item subfolders must not make the library create dirs in cwd.
+
+    internetarchive's File.download() runs os.makedirs(dirname(name)) relative to
+    its destdir even when given a fileobj. With no destdir that is the process cwd
+    (/app in the image, not writable), so "Mozart/CD01.flac" failed with EACCES.
+    """
+    name = "Mozart/CD01.flac"
+
+    def fake_ia_download(**kwargs):
+        # Mimic the library's side effect, then write the payload.
+        os.makedirs(os.path.join(kwargs.get("destdir") or "", os.path.dirname(name)), exist_ok=True)
+        kwargs["fileobj"].write(b"data")
+        return True
+
+    mock_ia_file = MagicMock()
+    mock_ia_file.download.side_effect = fake_ia_download
+    mock_item = MagicMock()
+    mock_item.get_file.return_value = mock_ia_file
+
+    cwd = tmp_path / "cwd"
+    dest = tmp_path / "dest"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    fetcher._shutdown_event.clear()
+
+    with patch("fetcher.internetarchive.get_item", return_value=mock_item):
+        _, ok = fetcher.download_single_file(
+            ia="ia",
+            identifier="test-item",
+            filename=name,
+            destdir=dest,
+            manifest_entry={"size": 4},
+            retries=1,
+            progress_timeout=30,
+            max_timeout=60,
+            verify_mode="none",
+            idx=0,
+            total=1,
+            max_mbps=0,
+            bucket=None,
+        )
+
+    assert ok is True
+    assert (dest / name).read_bytes() == b"data"
+    assert list(cwd.iterdir()) == [], "library side-effect dirs leaked into cwd"
+
+
 def _parse_mirror(argv):
     """Parse argv with the real parser and return (args, dests supplied on the CLI)."""
     parser, mirror_parser = fetcher.build_parser()
