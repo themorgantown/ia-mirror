@@ -206,6 +206,62 @@ def test_download_single_file_subdir_does_not_touch_cwd(monkeypatch, tmp_path):
     assert list(cwd.iterdir()) == [], "library side-effect dirs leaked into cwd"
 
 
+def test_download_single_file_midstream_failure_keeps_full_file(monkeypatch, tmp_path):
+    """A dropped connection must never leave a truncated file in place.
+
+    When internetarchive retries internally it closes the caller's fileobj and
+    writes the rest to its own file_path, then reports success. The partial
+    tmp file would then be renamed over the real destination.
+    """
+    payload = b"0123456789"
+    calls = {"n": 0}
+
+    def fake_ia_download(**kwargs):
+        # Mimic internetarchive 5.x: the first stream dies after 3 bytes.
+        calls["n"] += 1
+        fileobj = kwargs["fileobj"]
+        if calls["n"] == 1:
+            fileobj.write(payload[:3])
+            if kwargs.get("retries", 0) > 0:
+                side = os.path.join(kwargs.get("destdir") or ".", "test.bin")
+                with open(side, "wb") as fh:  # library's own retry target
+                    fh.write(payload)
+                return True
+            raise OSError("connection reset")
+        fileobj.write(payload)
+        return True
+
+    mock_ia_file = MagicMock()
+    mock_ia_file.download.side_effect = fake_ia_download
+    mock_item = MagicMock()
+    mock_item.get_file.return_value = mock_ia_file
+
+    monkeypatch.setenv("IA_RETRY_BACKOFF_BASE", "0")
+    monkeypatch.delenv("IA_DOWNLOAD_RETRIES", raising=False)
+    monkeypatch.chdir(tmp_path)
+    fetcher._shutdown_event.clear()
+
+    with patch("fetcher.internetarchive.get_item", return_value=mock_item):
+        _, ok = fetcher.download_single_file(
+            ia="ia",
+            identifier="test-item",
+            filename="test.bin",
+            destdir=tmp_path / "dest",
+            manifest_entry={"size": len(payload)},
+            retries=2,
+            progress_timeout=30,
+            max_timeout=60,
+            verify_mode="none",
+            idx=0,
+            total=1,
+            max_mbps=0,
+            bucket=None,
+        )
+
+    assert ok is True
+    assert (tmp_path / "dest" / "test.bin").read_bytes() == payload
+
+
 def _parse_mirror(argv):
     """Parse argv with the real parser and return (args, dests supplied on the CLI)."""
     parser, mirror_parser = fetcher.build_parser()

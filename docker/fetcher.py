@@ -757,7 +757,7 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
     # For the library call, we still use a boolean for checksum
     do_checksum = (verify_mode == "checksum")
 
-    _max_retries = int(os.getenv("IA_DOWNLOAD_RETRIES", "3"))
+    _max_retries = int(os.getenv("IA_DOWNLOAD_RETRIES", retries))
     _backoff_base = float(os.getenv("IA_RETRY_BACKOFF_BASE", "5"))
 
     try:
@@ -815,10 +815,13 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
                         # Even with fileobj, the library makedirs dirname(file.name)
                         # under destdir (default: cwd, /app, not writable), so
                         # "Dir/file.flac" failed with EACCES. Point it at scratch.
+                        # retries=0: the library's own retry closes our fileobj and
+                        # writes to its file_path instead, leaving tmp_path partial.
+                        # This loop retries with a fresh tmp_path.
                         success = ia_file.download(
                             fileobj=throttled_f,
                             destdir=lib_scratch,
-                            retries=retries,
+                            retries=0,
                             checksum=do_checksum,
                             timeout=progress_timeout,
                             params={'source': source} if source else None
