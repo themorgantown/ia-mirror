@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Downloads of files inside item subfolders (for example `Mozart/Volume 1(CD01).flac`) no longer fail with `[Errno 13] Permission denied`. `internetarchive`'s `File.download()` creates the file's parent folders relative to the process working directory even when given a file object, and the image's working directory `/app` is not writable. The library now gets a throwaway scratch directory instead.
+
 ## [1.2.4] - 2026-11-15
 
 ### Dependencies

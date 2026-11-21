@@ -5,7 +5,7 @@ Restored full feature set: parallel downloads, resume (status file), collection 
 dry-run, verify-only, estimation, resumefolders optimization, native bandwidth cap,
 cost/time estimation, graceful termination.
 """
-import argparse, json, logging, os, shutil, signal, subprocess, sys, threading, time, math, fnmatch, socket, uuid, atexit, random, csv, hashlib, http.server
+import argparse, json, logging, os, shutil, signal, subprocess, sys, tempfile, threading, time, math, fnmatch, socket, uuid, atexit, random, csv, hashlib, http.server
 import internetarchive
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
@@ -807,12 +807,17 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
                 break
             try:
                 with open(tmp_path, 'wb') as f:
-                    with ProgressThrottledFile(f, bucket, update_progress) as throttled_f:
+                    with ProgressThrottledFile(f, bucket, update_progress) as throttled_f, \
+                            tempfile.TemporaryDirectory() as lib_scratch:
                         # Note: internetarchive library uses requests internally.
                         # We pass timeout and params (for source).
                         # checksum=True in library will verify after download.
+                        # Even with fileobj, the library makedirs dirname(file.name)
+                        # under destdir (default: cwd, /app, not writable), so
+                        # "Dir/file.flac" failed with EACCES. Point it at scratch.
                         success = ia_file.download(
                             fileobj=throttled_f,
+                            destdir=lib_scratch,
                             retries=retries,
                             checksum=do_checksum,
                             timeout=progress_timeout,
