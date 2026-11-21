@@ -4,6 +4,7 @@
 
 ### Fixed
 - Downloads of files inside item subfolders (for example `Mozart/Volume 1(CD01).flac`) no longer fail with `[Errno 13] Permission denied`. `internetarchive`'s `File.download()` creates the file's parent folders relative to the process working directory even when given a file object, and the image's working directory `/app` is not writable. The library now gets a throwaway scratch directory instead.
+- A dropped connection mid-file can no longer leave a truncated file in place. On its internal retry, `internetarchive` closes the file object it was given and writes to its own path, so the partial temp file was renamed over the destination. The library now gets `retries=0`, and ia-mirror's own per-file retry loop starts each attempt on a fresh temp file. That loop now honors `--retries`/`IA_RETRIES` (default 5) unless `IA_DOWNLOAD_RETRIES` is set.
 
 ## [1.2.4] - 2026-11-15
 
