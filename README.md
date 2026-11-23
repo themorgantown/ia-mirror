@@ -102,7 +102,7 @@ default User-Agent, including the access key, is always still sent.
 | `17865` | `WEB_PORT` | Web UI and API served by Gunicorn |
 | `8080` | `IA_HEALTH_PORT` | Fetcher health/report server for active download jobs |
 
-The container healthcheck targets `http://localhost:17865/api/status`.
+The container healthcheck targets `http://localhost:17865/api/status` in Web UI mode and the fetcher health server (`http://localhost:8080/health`, see `IA_HEALTH_PORT`) in CLI mode.
 
 ## Volumes and Persistence
 
@@ -391,6 +391,7 @@ so `--glob '*'` overrides `IA_GLOB=*.zip`.
 | `IA_SYNC` | unset | Deletes local files that no longer exist remotely |
 | `IA_MAX_MBPS` | unset | Native Python throttling |
 | `IA_HEALTH_PORT` | `8080` | Disable with `0` |
+| `IA_LOCK_HEARTBEAT_STALE_SECONDS` | `120` | A lock from another container whose heartbeat is older than this is treated as left by a killed run and replaced |
 | `IA_USE_BATCH_SOURCE` | unset | Enables CSV batch mode |
 | `IA_BATCH_SOURCE_PATH` | `./batch_source.csv` | Batch CSV path |
 
@@ -402,6 +403,7 @@ Per item, ia-mirror writes:
 - `/downloads/<identifier>/report.json`
 - `/downloads/<identifier>/.ia_status/<identifier>.json`
 - `/downloads/<identifier>/.ia_status/lock.json`
+- `<file>.part` beside each file still downloading; an interrupted file resumes from it on the next run
 
 `report.json` is produced for dry runs and estimate-only runs as well as completed downloads.
 

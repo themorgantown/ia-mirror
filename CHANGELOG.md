@@ -3,8 +3,16 @@
 ## [Unreleased]
 
 ### Fixed
-- Downloads of files inside item subfolders (for example `Mozart/Volume 1(CD01).flac`) no longer fail with `[Errno 13] Permission denied`. `internetarchive`'s `File.download()` creates the file's parent folders relative to the process working directory even when given a file object, and the image's working directory `/app` is not writable. The library now gets a throwaway scratch directory instead.
-- A dropped connection mid-file can no longer leave a truncated file in place. On its internal retry, `internetarchive` closes the file object it was given and writes to its own path, so the partial temp file was renamed over the destination. The library now gets `retries=0`, and ia-mirror's own per-file retry loop starts each attempt on a fresh temp file. That loop now honors `--retries`/`IA_RETRIES` (default 5) unless `IA_DOWNLOAD_RETRIES` is set.
+- Downloads of files inside item subfolders (for example `Mozart/Volume 1(CD01).flac`) no longer fail with `[Errno 13] Permission denied`. Given a file object, `internetarchive`'s `File.download()` still creates the file's parent folders relative to the working directory, and the image's working directory `/app` is not writable. ia-mirror now asks the library for the HTTP response and writes the file itself.
+- Interrupted downloads resume instead of restarting from zero. Each file downloads to `<name>.part`. A retry, or the next run, requests only the missing bytes with an HTTP `Range` header and restarts cleanly if the server ignores it. Large files on unreliable connections previously failed every attempt.
+- A finished download is checked against the item's size (and MD5 with checksum verification) before it replaces the destination. Previously a dropped connection during the library's internal retry could leave a truncated file in place.
+- The per-file retry loop now honors `--retries`/`IA_RETRIES` (default 5) unless `IA_DOWNLOAD_RETRIES` is set.
+- `docker stop` now ends a CLI run within a few seconds and removes `.ia_status/lock.json`. Previously the stop timeout often expired first. SIGTERM now interrupts stalled downloads instead of waiting for the read timeout (900 s by default). Download status is saved at most every 2 seconds, where it was rewritten once per file, which on a network share fell minutes behind on large items. The speed sampler no longer delays exit.
+- A lock left by a killed container no longer blocks the next run for 24 hours. Every container has a new hostname, so its PID cannot be checked. A running fetcher now refreshes a `heartbeat` in `lock.json` every 30 seconds, and a lock from another host whose heartbeat is older than `IA_LOCK_HEARTBEAT_STALE_SECONDS` (default 120) is replaced. Locks without a heartbeat keep the old `IA_LOCK_STALE_SECONDS` rule.
+- `report.json` is written to a temporary file and then renamed. Opening it directly right after a rename over it failed with `[Errno 2]` on network shares, so the final report was lost.
+- The entrypoint no longer runs `chown -R` on `/downloads`, which rewrote ownership of every file in a mounted music or media library. It now skips the chown when the `app` user can already write `/downloads`, which is the case on Docker Desktop and most network mounts. Otherwise it changes ownership of the top-level folder only.
+- The healthcheck reports CLI-mode containers as healthy. It probed the Web UI port, which only runs in Web UI mode, so every CLI container showed `unhealthy`.
+- SIGTERM during the startup size estimate no longer waits for it to stat every local file.
 
 ## [1.2.4] - 2026-11-15
 
