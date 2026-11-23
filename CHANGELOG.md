@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.5] - 2026-11-23
 
 ### Fixed
 - Downloads of files inside item subfolders (for example `Mozart/Volume 1(CD01).flac`) no longer fail with `[Errno 13] Permission denied`. Given a file object, `internetarchive`'s `File.download()` still creates the file's parent folders relative to the working directory, and the image's working directory `/app` is not writable. ia-mirror now asks the library for the HTTP response and writes the file itself.
