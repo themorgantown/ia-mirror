@@ -5,7 +5,7 @@ Restored full feature set: parallel downloads, resume (status file), collection 
 dry-run, verify-only, estimation, resumefolders optimization, native bandwidth cap,
 cost/time estimation, graceful termination.
 """
-import argparse, json, logging, os, shutil, signal, subprocess, sys, tempfile, threading, time, math, fnmatch, socket, uuid, atexit, random, csv, hashlib, http.server
+import argparse, json, logging, os, shutil, signal, subprocess, sys, threading, time, math, fnmatch, socket, uuid, atexit, random, csv, hashlib, http.server
 import internetarchive
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
@@ -45,6 +45,7 @@ REPORT_FILENAME = "report.json"
 
 _running_processes = []
 _shutdown_event = threading.Event()
+_active_responses: set = set()  # streaming downloads, for signal_handler
 
 
 def _safe_archive_relative_path(filename: str, no_directories: bool = False) -> Path:
@@ -163,10 +164,18 @@ def lock_is_stale(lock_info: dict, *, now: float | None = None, current_host: st
     if lock_host == current_host and _pid_is_running(pid):
         return False
 
-    # A lock from another container/host cannot be probed by PID. Treat recent
-    # locks as active, then let stale-lock cleanup recover old interrupted runs.
-    if lock_host and lock_host != current_host and started is not None:
-        return (now - started) > stale_seconds
+    # A lock from another container/host cannot be probed by PID. A live run
+    # refreshes "heartbeat"; every container has a new hostname, so without it
+    # a killed run's lock blocked the next one for stale_seconds (24h).
+    if lock_host and lock_host != current_host:
+        try:
+            heartbeat = float(lock_info["heartbeat"])
+        except (KeyError, TypeError, ValueError):
+            heartbeat = None
+        if heartbeat is not None:
+            return (now - heartbeat) > float(os.getenv("IA_LOCK_HEARTBEAT_STALE_SECONDS", "120"))
+        if started is not None:
+            return (now - started) > stale_seconds
 
     return True
 
@@ -195,6 +204,8 @@ class HealthCheckServer:
                             self.end_headers()
                             self.wfile.write(data)
                             return
+                        except (BrokenPipeError, ConnectionResetError):
+                            return  # probe gave up (e.g. healthcheck timeout); nothing to report
                         except Exception as e:
                             logging.error("Error reading report for health check: %s", e)
                     
@@ -621,7 +632,7 @@ def _speed_sampler_thread(initial_assumed_mbps: float):
     last_ts = time.time()
     first = True
     while not _speed_sampler_stop.is_set():
-        time.sleep(min(5, _speed_sample_interval) if first else _speed_sample_interval)
+        _speed_sampler_stop.wait(min(5, _speed_sample_interval) if first else _speed_sample_interval)
         now = time.time()
         with _progress_lock:
             cur_bytes = _bytes_downloaded_total
@@ -754,7 +765,6 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
             "bytes_total": manifest_entry.get("size", 0)
         })
 
-    # For the library call, we still use a boolean for checksum
     do_checksum = (verify_mode == "checksum")
 
     _max_retries = int(os.getenv("IA_DOWNLOAD_RETRIES", retries))
@@ -764,8 +774,9 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
         item = internetarchive.get_item(identifier, archive_session=get_archive_session())
         ia_file = item.get_file(filename)
 
-        # Use a temporary file for downloading to avoid partial files on failure
-        tmp_path = local_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        # Download to a stable side file; a later attempt or run resumes it.
+        tmp_path = local_path.with_name(local_path.name + ".part")
+        expected_size = int(manifest_entry.get("size") or 0)
 
         def update_progress(current_size):
             _update_aggregate_bytes(tmp_path, current_size)
@@ -801,51 +812,62 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
                     self.last_update = now
                 return n
 
-        # Download using the internetarchive library, with per-file retry/backoff
+        # Stream the response ourselves (return_responses=True). With a fileobj
+        # or file_path the library creates parent dirs relative to cwd and, on
+        # its internal retry, abandons the fileobj for its own path.
         for attempt in range(_max_retries + 1):
             if _shutdown_event.is_set():
                 break
             try:
-                with open(tmp_path, 'wb') as f:
-                    with ProgressThrottledFile(f, bucket, update_progress) as throttled_f, \
-                            tempfile.TemporaryDirectory() as lib_scratch:
-                        # Note: internetarchive library uses requests internally.
-                        # We pass timeout and params (for source).
-                        # checksum=True in library will verify after download.
-                        # Even with fileobj, the library makedirs dirname(file.name)
-                        # under destdir (default: cwd, /app, not writable), so
-                        # "Dir/file.flac" failed with EACCES. Point it at scratch.
-                        # retries=0: the library's own retry closes our fileobj and
-                        # writes to its file_path instead, leaving tmp_path partial.
-                        # This loop retries with a fresh tmp_path.
-                        success = ia_file.download(
-                            fileobj=throttled_f,
-                            destdir=lib_scratch,
-                            retries=0,
-                            checksum=do_checksum,
-                            timeout=progress_timeout,
-                            params={'source': source} if source else None
-                        )
+                have = tmp_path.stat().st_size if tmp_path.exists() else 0
+                if not expected_size or have > expected_size:
+                    have = 0  # unknown size or bad leftover: start over
+                if not have or have < expected_size:
+                    resp = ia_file.download(
+                        return_responses=True,
+                        retries=retries,
+                        timeout=progress_timeout,
+                        params={'source': source} if source else None,
+                        headers={"Range": f"bytes={have}-"} if have else None,
+                    )
+                    _active_responses.add(resp)  # signal_handler interrupts stalled reads
+                    try:
+                        with resp:
+                            if have and resp.status_code != 206:
+                                have = 0  # server ignored the Range header
+                            with open(tmp_path, 'ab' if have else 'wb') as f:
+                                with ProgressThrottledFile(f, bucket, update_progress) as throttled_f:
+                                    throttled_f.current_size = have
+                                    # Small chunks: write() raises on shutdown, so SIGTERM is
+                                    # seen within one chunk even on a slow link.
+                                    for chunk in resp.iter_content(chunk_size=64 * 1024):
+                                        throttled_f.write(chunk)
+                    finally:
+                        _active_responses.discard(resp)
+                success = verify_local_file(filename, tmp_path, manifest_entry,
+                                            "checksum" if do_checksum else "size")
+                if not success:
+                    tmp_path.unlink(missing_ok=True)  # wrong size or checksum: never resume it
+                    logging.warning("Downloaded %s does not match the item metadata", filename)
             except Exception as dl_exc:
                 success = False
                 logging.warning("Download attempt %d/%d raised exception for %s: %s",
                                 attempt + 1, _max_retries + 1, filename, dl_exc)
-                _backoff_register_event(str(dl_exc))
+                if not _shutdown_event.is_set():
+                    _backoff_register_event(str(dl_exc))
             if success:
                 break
             if attempt < _max_retries and not _shutdown_event.is_set():
                 delay = _backoff_base * (2 ** attempt)
                 logging.warning("Download failed for %s (attempt %d/%d), retrying in %.0fs",
                                 filename, attempt + 1, _max_retries + 1, delay)
-                if tmp_path.exists():
-                    try: tmp_path.unlink()
-                    except: pass
                 _shutdown_event.wait(delay)
 
         if success:
             # Final progress update
             update_progress(tmp_path.stat().st_size)
             tmp_path.replace(local_path)
+            logging.info("downloaded %s/%s", identifier, filename)
             _backoff_relax()
             if _json_output:
                  _print_json("file_end", {
@@ -853,8 +875,7 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
                     "status": "success"
                 })
         else:
-            if tmp_path.exists():
-                tmp_path.unlink()
+            # Keep the .part file: the next run resumes it.
             logging.error("Download failed for %s", filename)
             if _json_output:
                  _print_json("file_end", {
@@ -864,9 +885,6 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
                 })
 
     except Exception as e:
-        if 'tmp_path' in locals() and tmp_path.exists():
-            try: tmp_path.unlink()
-            except: pass
         logging.error("Exception downloading %s: %s", filename, e)
         _backoff_register_event(str(e))
         success = False
@@ -883,6 +901,12 @@ def download_single_file(ia: str, identifier: str, filename: str, destdir: Path,
 def signal_handler(signum, frame):
     sys.stderr.write("\n⚠️ Interrupt received — finishing current downloads…\n")
     _shutdown_event.set()
+    # A stalled stream would otherwise block until the read timeout (900s default).
+    for r in list(_active_responses):
+        try:
+            r.raw.shutdown()
+        except Exception:
+            pass
     for p in list(_running_processes):
         try:
             p.terminate()
@@ -1102,7 +1126,11 @@ def apply_env_defaults(args, supplied: set|None = None) -> None:
 
 def write_report(report_path: Path, data: dict):
     try:
-        report_path.write_text(json.dumps(data, indent=2))
+        # Write then rename, like write_snapshot_report: opening report.json
+        # right after a rename over it failed with ENOENT on network shares.
+        tmp = report_path.with_suffix('.tmp')
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(report_path)
     except Exception as e:
         print(f"WARNING: Failed to write {report_path.name}: {e}", file=sys.stderr)
 
@@ -1577,6 +1605,7 @@ def main():
                 "pid": os.getpid(),
                 "host": socket.gethostname(),
                 "started": time.time(),
+                "heartbeat": time.time(),
                 "identifier": args.identifier,
                 "uuid": str(uuid.uuid4()),
             }
@@ -1584,7 +1613,21 @@ def main():
         except Exception as e:
             logging.warning("Failed to create lock file: %s", e)
 
+        heartbeat_stop = threading.Event()
+
+        def _heartbeat():
+            while not heartbeat_stop.wait(30):
+                try:
+                    lock_info["heartbeat"] = time.time()
+                    lock_path.write_text(json.dumps(lock_info, indent=2))
+                except Exception:
+                    pass
+        heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+        heartbeat_thread.start()
+
         def _unlock():
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=2)  # never rewrite the lock after removing it
             try:
                 # Only remove if content matches our uuid (avoid deleting foreign lock)
                 if lock_path.exists():
@@ -1866,6 +1909,8 @@ def main():
     dry_run_file_list = []
 
     for item, fname in job_list:
+        if _shutdown_event.is_set():
+            break  # estimate only; stat() per file is slow on network shares
         manifest_entry = manifests.get(item, {}).get(fname, {})
         sz = manifest_entry.get("size")
         if sz is None:
@@ -2079,6 +2124,7 @@ def main():
             for idx, (item, fname) in enumerate(job_list, 1)
             if f"{item}/{fname}" in status["pending"]
         }
+        last_save = 0.0
         for fut in as_completed(futmap):
             item, fname = futmap[fut]
             try:
@@ -2086,6 +2132,10 @@ def main():
             except Exception as e:
                 success = False
                 logging.error("Exception on %s: %s", fname, e)
+            if not success and _shutdown_event.is_set():
+                # Interrupted or never started: leave it pending. Saving status per
+                # queued file took longer than docker stop's grace period.
+                continue
             key = f"{item}/{fname}"
             if success:
                 newly_downloaded.append(key)
@@ -2094,7 +2144,11 @@ def main():
                     status["pending"].remove(key)
             else:
                 failures.append(key)
-            save_status(identifier, dest, status)
+            # Throttled: a save per file (e.g. 1500 "already have") on a network
+            # share fell minutes behind and outlasted docker stop's grace period.
+            if time.time() - last_save >= 2:
+                save_status(identifier, dest, status)
+                last_save = time.time()
         
         if args.sync and not _shutdown_event.is_set():
             orphans = perform_sync(
@@ -2107,7 +2161,8 @@ def main():
             )
             print(f"\n🧹 Sync: Deleted {len(orphans)} orphaned files.")
     finally:
-        # ensure a final report is written even on SIGTERM
+        # ensure a final status and report are written even on SIGTERM
+        save_status(identifier, dest, status)
         end_ts = time.time()
         write_report(dest/REPORT_FILENAME, {
             "schema_version": 1,

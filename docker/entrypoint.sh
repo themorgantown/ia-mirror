@@ -97,12 +97,14 @@ if [[ "$SKIP_PERM_FIX" != "true" ]]; then
     echo "Checking permissions..."
     mkdir -p /downloads /data
     
-    # Check if /downloads is owned by app (uid matches PUID)
-    if [[ "$(stat -c '%u' /downloads 2>/dev/null)" != "$PUID" ]]; then
-        echo "Fixing permissions for /downloads (recursive)..."
-        chown -R app:app /downloads
+    # /downloads is often an existing library: never chown its contents.
+    # Docker Desktop and SMB/NFS mounts report root ownership yet are writable.
+    if su-exec app test -w /downloads; then
+        echo "/downloads is writable by app. Skipping chown."
     else
-        echo "/downloads already owned by app. Skipping recursive chown."
+        echo "Fixing ownership of /downloads (top level only; existing contents untouched)..."
+        chown app:app /downloads || true
+        echo "If existing folders under /downloads are not writable, set PUID/PGID to their owner."
     fi
 
     # Check if /data is owned by app

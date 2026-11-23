@@ -52,7 +52,7 @@ RUN mkdir -p /downloads /data && chown app:app /downloads /data
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD ["sh", "-c", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:17865/api/status', timeout=8)\" 2>/dev/null || exit 1"]
+  CMD ["python", "-c", "import os, sys, urllib.error, urllib.request\nweb = os.environ.get('WEB_ENABLED', 'true') == 'true'\nurl = f\"http://localhost:{os.environ.get('WEB_PORT', '17865')}/api/status\" if web else f\"http://localhost:{os.environ.get('IA_HEALTH_PORT', '8080')}/health\"\ntry:\n    urllib.request.urlopen(url, timeout=8).read()\nexcept urllib.error.HTTPError:\n    sys.exit(0 if not web else 1)  # CLI: any reply means the fetcher is alive\nexcept Exception:\n    sys.exit(1)"]
 
 # Expose port
 EXPOSE 17865

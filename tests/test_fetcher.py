@@ -81,6 +81,16 @@ def test_lock_is_stale_keeps_recent_other_host_lock(monkeypatch):
     assert fetcher.lock_is_stale({"pid": 123, "host": "container-b", "started": 1}, now=100, current_host="container-a") is True
 
 
+def test_lock_is_stale_uses_heartbeat_for_other_host_lock(monkeypatch):
+    """A killed container's lock frees up once its heartbeat stops, not after 24h."""
+    monkeypatch.setenv("IA_LOCK_HEARTBEAT_STALE_SECONDS", "120")
+    live = {"pid": 7, "host": "container-b", "started": 0, "heartbeat": 950}
+    dead = {"pid": 7, "host": "container-b", "started": 900, "heartbeat": 900}
+
+    assert fetcher.lock_is_stale(live, now=1000, current_host="container-a") is False
+    assert fetcher.lock_is_stale(dead, now=1100, current_host="container-a") is True
+
+
 def test_batch_mode_inherits_env_dry_run_with_cli_args(monkeypatch, tmp_path):
     batch_file = tmp_path / "batch.csv"
     batch_file.write_text("source,destdir\nitem-one,/downloads\n")
@@ -116,150 +126,176 @@ def test_batch_mode_inherits_env_dry_run_with_cli_args(monkeypatch, tmp_path):
     assert captured["env"]["IA_IS_CHILD"] == "1"
 
 
-def test_download_single_file_retries_on_failure(monkeypatch, tmp_path):
-    """download_single_file retries on ia_file.download() failure and succeeds on 3rd attempt."""
-    call_count = {"n": 0}
+class FakeResponse:
+    """Minimal stand-in for the streamed requests.Response the library returns."""
 
-    def fake_ia_download(**kwargs):
-        call_count["n"] += 1
-        if call_count["n"] < 3:
-            return False
-        kwargs["fileobj"].write(b"data")
-        return True
+    def __init__(self, body, status_code=200, fail_after=None):
+        self.body = body
+        self.status_code = status_code
+        self.fail_after = fail_after
 
+    def iter_content(self, chunk_size=1):
+        if self.fail_after is None:
+            yield self.body
+            return
+        yield self.body[:self.fail_after]
+        raise ConnectionError("Connection broken: IncompleteRead")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _download(dest, filename, size, fake_download, retries=2, verify_mode="size"):
     mock_ia_file = MagicMock()
-    mock_ia_file.download.side_effect = fake_ia_download
-
+    mock_ia_file.download.side_effect = fake_download
     mock_item = MagicMock()
     mock_item.get_file.return_value = mock_ia_file
-
-    monkeypatch.setenv("IA_DOWNLOAD_RETRIES", "3")
-    monkeypatch.setenv("IA_RETRY_BACKOFF_BASE", "0")
     fetcher._shutdown_event.clear()
-
     with patch("fetcher.internetarchive.get_item", return_value=mock_item):
-        fname, ok = fetcher.download_single_file(
+        _, ok = fetcher.download_single_file(
             ia="ia",
             identifier="test-item",
-            filename="test.txt",
-            destdir=tmp_path,
-            manifest_entry={"size": 4},
-            retries=1,
+            filename=filename,
+            destdir=dest,
+            manifest_entry={"size": size},
+            retries=retries,
             progress_timeout=30,
             max_timeout=60,
-            verify_mode="none",
+            verify_mode=verify_mode,
             idx=0,
             total=1,
             max_mbps=0,
             bucket=None,
         )
+    return ok, mock_ia_file.download
+
+
+@pytest.fixture
+def fast_retries(monkeypatch):
+    monkeypatch.setenv("IA_RETRY_BACKOFF_BASE", "0")
+    monkeypatch.delenv("IA_DOWNLOAD_RETRIES", raising=False)
+
+
+def test_download_single_file_retries_on_failure(fast_retries, tmp_path):
+    """download_single_file retries a failed request and succeeds on the 3rd attempt."""
+    calls = {"n": 0}
+
+    def fake_download(**kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ConnectionError("boom")
+        return FakeResponse(b"data")
+
+    ok, dl = _download(tmp_path, "test.txt", 4, fake_download)
 
     assert ok is True, "Expected success after retries"
-    assert mock_ia_file.download.call_count == 3
+    assert dl.call_count == 3
+    assert (tmp_path / "test.txt").read_bytes() == b"data"
 
 
-def test_download_single_file_subdir_does_not_touch_cwd(monkeypatch, tmp_path):
+def test_download_single_file_subdir_does_not_touch_cwd(fast_retries, monkeypatch, tmp_path):
     """Files inside item subfolders must not make the library create dirs in cwd.
 
-    internetarchive's File.download() runs os.makedirs(dirname(name)) relative to
-    its destdir even when given a fileobj. With no destdir that is the process cwd
-    (/app in the image, not writable), so "Mozart/CD01.flac" failed with EACCES.
+    Given a fileobj or file_path, internetarchive's File.download() runs
+    os.makedirs(dirname(name)) relative to cwd (/app in the image, not
+    writable), so "Mozart/CD01.flac" failed with EACCES.
     """
     name = "Mozart/CD01.flac"
 
-    def fake_ia_download(**kwargs):
-        # Mimic the library's side effect, then write the payload.
-        os.makedirs(os.path.join(kwargs.get("destdir") or "", os.path.dirname(name)), exist_ok=True)
-        kwargs["fileobj"].write(b"data")
-        return True
-
-    mock_ia_file = MagicMock()
-    mock_ia_file.download.side_effect = fake_ia_download
-    mock_item = MagicMock()
-    mock_item.get_file.return_value = mock_ia_file
+    def fake_download(**kwargs):
+        if not kwargs.get("return_responses"):
+            os.makedirs(os.path.join(kwargs.get("destdir") or "", os.path.dirname(name)), exist_ok=True)
+        return FakeResponse(b"data")
 
     cwd = tmp_path / "cwd"
-    dest = tmp_path / "dest"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
-    fetcher._shutdown_event.clear()
 
-    with patch("fetcher.internetarchive.get_item", return_value=mock_item):
-        _, ok = fetcher.download_single_file(
-            ia="ia",
-            identifier="test-item",
-            filename=name,
-            destdir=dest,
-            manifest_entry={"size": 4},
-            retries=1,
-            progress_timeout=30,
-            max_timeout=60,
-            verify_mode="none",
-            idx=0,
-            total=1,
-            max_mbps=0,
-            bucket=None,
-        )
+    ok, _ = _download(tmp_path / "dest", name, 4, fake_download)
 
     assert ok is True
-    assert (dest / name).read_bytes() == b"data"
+    assert (tmp_path / "dest" / name).read_bytes() == b"data"
     assert list(cwd.iterdir()) == [], "library side-effect dirs leaked into cwd"
 
 
-def test_download_single_file_midstream_failure_keeps_full_file(monkeypatch, tmp_path):
-    """A dropped connection must never leave a truncated file in place.
+def test_download_single_file_resumes_after_dropped_connection(fast_retries, tmp_path):
+    """A dropped connection resumes from the bytes already on disk, not from zero."""
+    payload = b"0123456789"
+    ranges = []
 
-    When internetarchive retries internally it closes the caller's fileobj and
-    writes the rest to its own file_path, then reports success. The partial
-    tmp file would then be renamed over the real destination.
-    """
+    def fake_download(**kwargs):
+        rng = (kwargs.get("headers") or {}).get("Range")
+        ranges.append(rng)
+        if rng is None:
+            return FakeResponse(payload, fail_after=3)
+        start = int(rng.split("=")[1].rstrip("-"))
+        return FakeResponse(payload[start:], status_code=206)
+
+    ok, _ = _download(tmp_path, "big.zip", len(payload), fake_download)
+
+    assert ok is True
+    assert ranges == [None, "bytes=3-"]
+    assert (tmp_path / "big.zip").read_bytes() == payload
+    assert not (tmp_path / "big.zip.part").exists()
+
+
+def test_download_single_file_restarts_when_range_ignored(fast_retries, tmp_path):
+    """A 200 reply to a Range request is the whole file: overwrite, never append."""
     payload = b"0123456789"
     calls = {"n": 0}
 
-    def fake_ia_download(**kwargs):
-        # Mimic internetarchive 5.x: the first stream dies after 3 bytes.
+    def fake_download(**kwargs):
         calls["n"] += 1
-        fileobj = kwargs["fileobj"]
         if calls["n"] == 1:
-            fileobj.write(payload[:3])
-            if kwargs.get("retries", 0) > 0:
-                side = os.path.join(kwargs.get("destdir") or ".", "test.bin")
-                with open(side, "wb") as fh:  # library's own retry target
-                    fh.write(payload)
-                return True
-            raise OSError("connection reset")
-        fileobj.write(payload)
-        return True
+            return FakeResponse(payload, fail_after=4)
+        return FakeResponse(payload, status_code=200)
 
-    mock_ia_file = MagicMock()
-    mock_ia_file.download.side_effect = fake_ia_download
-    mock_item = MagicMock()
-    mock_item.get_file.return_value = mock_ia_file
-
-    monkeypatch.setenv("IA_RETRY_BACKOFF_BASE", "0")
-    monkeypatch.delenv("IA_DOWNLOAD_RETRIES", raising=False)
-    monkeypatch.chdir(tmp_path)
-    fetcher._shutdown_event.clear()
-
-    with patch("fetcher.internetarchive.get_item", return_value=mock_item):
-        _, ok = fetcher.download_single_file(
-            ia="ia",
-            identifier="test-item",
-            filename="test.bin",
-            destdir=tmp_path / "dest",
-            manifest_entry={"size": len(payload)},
-            retries=2,
-            progress_timeout=30,
-            max_timeout=60,
-            verify_mode="none",
-            idx=0,
-            total=1,
-            max_mbps=0,
-            bucket=None,
-        )
+    ok, _ = _download(tmp_path, "big.zip", len(payload), fake_download)
 
     assert ok is True
-    assert (tmp_path / "dest" / "test.bin").read_bytes() == payload
+    assert (tmp_path / "big.zip").read_bytes() == payload
+
+
+def test_download_single_file_resumes_part_from_previous_run(fast_retries, tmp_path):
+    """A .part left by an interrupted run is continued on the next run."""
+    payload = b"0123456789"
+    (tmp_path / "big.zip.part").write_bytes(payload[:6])
+
+    def fake_download(**kwargs):
+        assert kwargs["headers"] == {"Range": "bytes=6-"}
+        return FakeResponse(payload[6:], status_code=206)
+
+    ok, _ = _download(tmp_path, "big.zip", len(payload), fake_download)
+
+    assert ok is True
+    assert (tmp_path / "big.zip").read_bytes() == payload
+
+
+def test_signal_handler_interrupts_active_downloads():
+    """SIGTERM must unblock a stalled stream instead of waiting for the read timeout."""
+    resp = MagicMock()
+    fetcher._active_responses.add(resp)
+    try:
+        fetcher.signal_handler(15, None)
+        resp.raw.shutdown.assert_called_once()
+    finally:
+        fetcher._active_responses.discard(resp)
+        fetcher._shutdown_event.clear()
+
+
+def test_download_single_file_rejects_wrong_size(fast_retries, tmp_path):
+    """A body shorter than the item metadata says is a failure, never the final file."""
+
+    def fake_download(**kwargs):
+        return FakeResponse(b"short")
+
+    ok, _ = _download(tmp_path, "big.zip", 10, fake_download, retries=1)
+
+    assert ok is False
+    assert not (tmp_path / "big.zip").exists()
 
 
 def _parse_mirror(argv):
